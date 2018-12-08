@@ -1,0 +1,331 @@
+name: LWJGL Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+
+env:
+  AWS_DEFAULT_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  S3_PARAMS: --cache-control "public,must-revalidate,proxy-revalidate,max-age=0"
+  JEMALLOC_PARAMS: --with-jemalloc-prefix=je_ --disable-stats --disable-fill --disable-cxx --enable-doc=no
+
+jobs:
+  linux:
+    name: Linux
+    runs-on: ubuntu-latest
+    container:
+      image: centos:7
+    strategy:
+      fail-fast: false
+      matrix:
+        ARCH: [x64]
+        include:
+          - ARCH: x64
+            HOST: x86_64-pc-linux-gnu
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Upgrade git
+        run: |
+          yum -y install https://packages.endpointdev.com/rhel/7/os/x86_64/endpoint-repo.x86_64.rpm
+          yum -y install git
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 3
+          fetch-tags: true
+      - name: Configure yum
+        run: |
+          yum -y install epel-release
+          yum -y update
+      - name: Install build dependencies
+        run: |
+          yum -y install centos-release-scl
+          yum -y install devtoolset-11-gcc-c++
+          yum -y install autoconf automake libtool awscli
+      - name: Configure build
+        run: |
+          source scl_source enable devtoolset-11 || true
+          CFLAGS="-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0" ./autogen.sh $JEMALLOC_PARAMS --disable-initial-exec-tls --host=${{matrix.HOST}} || (cat config.log ; exit 1)
+      - name: Build
+        run: |
+          source scl_source enable devtoolset-11 || true
+          make
+          strip lib/libjemalloc.so
+      - name: Upload artifact
+        run: aws s3 cp lib/libjemalloc.so s3://lwjgl-build/nightly/linux/${{matrix.ARCH}}/ $S3_PARAMS
+      - name: Upload git revision
+        run: |
+          git config --global --add safe.directory $PWD
+          git log --first-parent --pretty=format:%H HEAD~2..HEAD~1 > libjemalloc.so.git
+          aws s3 cp libjemalloc.so.git s3://lwjgl-build/nightly/linux/${{matrix.ARCH}}/ $S3_PARAMS
+
+  linux-cross:
+    name: Linux Cross
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        ARCH: [arm32, arm64, ppc64le, riscv64]
+        include:
+          # -----
+          - ARCH: arm32
+            CROSS_ARCH: armhf
+            TRIPLET: arm-linux-gnueabihf
+            EXTRA_PARAMS:
+            HOST: arm-unknown-linux-gnueabihf
+          # -----
+          - ARCH: arm64
+            CROSS_ARCH: arm64
+            TRIPLET: aarch64-linux-gnu
+            EXTRA_PARAMS: --with-lg-page=14
+            HOST: aarch64-unknown-linux-gnu
+          # ----
+          - ARCH: ppc64le
+            CROSS_ARCH: ppc64el
+            TRIPLET: powerpc64le-linux-gnu
+            EXTRA_PARAMS:
+            HOST: powerpc64le-unknown-linux-gnu
+          # -----
+          - ARCH: riscv64
+            CROSS_ARCH: riscv64
+            TRIPLET: riscv64-linux-gnu
+            EXTRA_PARAMS:
+            HOST: riscv64-unknown-linux-gnu
+    env:
+      LWJGL_ARCH: ${{matrix.ARCH}}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 3
+          fetch-tags: true
+      - name: Install dependencies
+        run: DEBIAN_FRONTEND=noninteractive sudo apt-get -yq install awscli autoconf make gcc-${{matrix.TRIPLET}} libc6-dev-${{matrix.CROSS_ARCH}}-cross
+      - name: Configure build
+        run: PKG_CONFIG_PATH=${PKG_CONFIG_PATH}:${CMAKE_SYSROOT}/usr/lib/${{matrix.TRIPLET}}/pkgconfig CC=${{matrix.TRIPLET}}-gcc CFLAGS="-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0" ./autogen.sh $JEMALLOC_PARAMS ${{matrix.EXTRA_PARAMS}} --disable-initial-exec-tls --host=${{matrix.HOST}} || (cat config.log ; exit 1)
+      - name: Build
+        run: |
+          make
+          ${{matrix.TRIPLET}}-strip lib/libjemalloc.so
+      - name: Upload artifact
+        run: aws s3 cp lib/libjemalloc.so s3://lwjgl-build/nightly/linux/${{matrix.ARCH}}/ $S3_PARAMS
+      - name: Upload git revision
+        run: |
+          git config --global --add safe.directory $PWD
+          git log --first-parent --pretty=format:%H HEAD~2..HEAD~1 > libjemalloc.so.git
+          aws s3 cp libjemalloc.so.git s3://lwjgl-build/nightly/linux/${{matrix.ARCH}}/ $S3_PARAMS
+
+#  linux-cross:
+#    name: Linux Cross
+#    runs-on: ubuntu-latest
+#    container:
+#      image: ${{matrix.CONTAINER}}
+#    strategy:
+#      fail-fast: false
+#      matrix:
+#        ARCH: [arm32, arm64, ppc64le, riscv64]
+#        include:
+#          # -----
+#          - ARCH: arm32
+#            CROSS_ARCH: armhf
+#            CONTAINER: ubuntu:18.04
+#            TRIPLET: arm-linux-gnueabihf
+#            EXTRA_PARAMS:
+#            HOST: arm-unknown-linux-gnueabihf
+#          # -----
+#          - ARCH: arm64
+#            CROSS_ARCH: arm64
+#            CONTAINER: ubuntu:18.04
+#            TRIPLET: aarch64-linux-gnu
+#            EXTRA_PARAMS: --with-lg-page=14
+#            HOST: aarch64-unknown-linux-gnu
+#          # ----
+#          - ARCH: ppc64le
+#            CROSS_ARCH: ppc64el
+#            CONTAINER: ubuntu:18.04
+#            TRIPLET: powerpc64le-linux-gnu
+#            EXTRA_PARAMS:
+#            HOST: powerpc64le-unknown-linux-gnu
+#          # -----
+#          - ARCH: riscv64
+#            CROSS_ARCH: riscv64
+#            CONTAINER: ubuntu:20.04
+#            TRIPLET: riscv64-linux-gnu
+#            EXTRA_PARAMS:
+#            HOST: riscv64-unknown-linux-gnu
+#    env:
+#      LWJGL_ARCH: ${{matrix.ARCH}}
+#    defaults:
+#      run:
+#        shell: bash
+#    steps:
+#      - name: Update apt repositories
+#        run: |
+#          apt-get -y update
+#          apt-get -y install software-properties-common
+#          apt-get -y install --reinstall ca-certificates
+#          add-apt-repository -y ppa:git-core/ppa
+#        if: ${{ matrix.CONTAINER == 'ubuntu:18.04' }}
+#      - name: Upgrade git
+#        run: |
+#          apt-get -y update
+#          apt-get -y upgrade
+#          DEBIAN_FRONTEND=noninteractive apt-get -yq install awscli git autoconf make
+#      - uses: actions/checkout@v3
+#        with:
+#          fetch-depth: 3
+#          fetch-tags: true
+#      - name: Prepare cross-compilation for ${{matrix.CROSS_ARCH}}
+#        run: apt-get update
+#      - name: Install dependencies
+#        run: apt-get -yq install gcc-${{matrix.TRIPLET}} libc6-dev-${{matrix.CROSS_ARCH}}-cross
+#      - name: Configure build
+#        run: |
+#          PKG_CONFIG_PATH=${PKG_CONFIG_PATH}:${CMAKE_SYSROOT}/usr/lib/${{matrix.TRIPLET}}/pkgconfig CC=${{matrix.TRIPLET}}-gcc CFLAGS="-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0" ./autogen.sh $JEMALLOC_PARAMS ${{matrix.EXTRA_PARAMS}} --disable-initial-exec-tls --host=${{matrix.HOST}} || true
+#          cat config.log
+#      - name: Build
+#        run: |
+#          make
+#          ${{matrix.TRIPLET}}-strip lib/libjemalloc.so
+#      - name: Upload artifact
+#        run: aws s3 cp lib/libjemalloc.so s3://lwjgl-build/nightly/linux/${{matrix.ARCH}}/ $S3_PARAMS
+#      - name: Upload git revision
+#        run: |
+#          git config --global --add safe.directory $PWD
+#          git log --first-parent --pretty=format:%H HEAD~2..HEAD~1 > libjemalloc.so.git
+#          aws s3 cp libjemalloc.so.git s3://lwjgl-build/nightly/linux/${{matrix.ARCH}}/ $S3_PARAMS
+
+  freebsd-cross:
+    name: FreeBSD Cross
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 3
+          fetch-tags: true
+      - name: Build
+        uses: cross-platform-actions/action@v0.24.0
+        with:
+          operating_system: freebsd
+          architecture: x86-64
+          version: '13.2'
+          memory: 4G
+          shell: bash
+          environment_variables: JEMALLOC_PARAMS
+          run: |
+            sudo pkg install -y autoconf automake libtool gmake
+            CFLAGS="-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0" ./autogen.sh $JEMALLOC_PARAMS --disable-initial-exec-tls --enable-lazy-lock=no
+            gmake
+            strip lib/libjemalloc.so
+      - name: Upload artifact
+        run: aws s3 cp lib/libjemalloc.so s3://lwjgl-build/nightly/freebsd/x64/ $S3_PARAMS
+      - name: Upload git revision
+        run: |
+          git config --global --add safe.directory $PWD
+          git log --first-parent --pretty=format:%H HEAD~2..HEAD~1 > libjemalloc.so.git
+          aws s3 cp libjemalloc.so.git s3://lwjgl-build/nightly/freebsd/x64/ $S3_PARAMS
+
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ARCH: [x64, arm64]
+        include:
+          - ARCH: x64
+            DARWIN: 15
+            CC: MACOSX_DEPLOYMENT_TARGET=10.11 EXTRA_CFLAGS="-target x64-apple-darwin -arch x86_64 -mmacosx-version-min=10.11" LDFLAGS="-target x64-apple-darwin -arch x86_64 -mmacosx-version-min=10.11"
+            HOST: x86_64
+            EXTRA_PARAMS:
+          - ARCH: arm64
+            DARWIN: 20
+            CC: MACOSX_DEPLOYMENT_TARGET=11.0 EXTRA_CFLAGS="-target aarch64-apple-darwin -arch arm64 -mmacosx-version-min=11.0" LDFLAGS="-target aarch64-apple-darwin -arch arm64 -mmacosx-version-min=11.0"
+            HOST: aarch64
+            EXTRA_PARAMS: --with-lg-page=14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 3
+          fetch-tags: true
+      - name: Install dependencies
+        run: brew install automake
+      - name: Configure build
+        run: ${{matrix.CC}} ./autogen.sh $JEMALLOC_PARAMS --disable-initial-exec-tls --disable-zone-allocator --target ${{matrix.ARCH}}-apple-darwin${{matrix.DARWIN}} --host=${{matrix.HOST}}-apple-darwin${{matrix.DARWIN}} ${{matrix.EXTRA_PARAMS}}
+      - name: Build
+        run: |
+          ${{matrix.CC}} make
+          strip -u -r lib/libjemalloc.dylib
+      - name: Upload artifact
+        run: aws s3 cp lib/libjemalloc.dylib s3://lwjgl-build/nightly/macosx/${{matrix.ARCH}}/ $S3_PARAMS
+      - name: Upload git revision
+        run: |
+          git log --first-parent --pretty=format:%H HEAD~2..HEAD~1 > libjemalloc.dylib.git
+          aws s3 cp libjemalloc.dylib.git s3://lwjgl-build/nightly/macosx/${{matrix.ARCH}}/ $S3_PARAMS
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ARCH: [x86, x64, arm64]
+        include:
+          - ARCH: x86
+            MSVC_ARCH: amd64_x86
+            HOST: i686-pc-cygwin
+            CFLAGS:
+          - ARCH: x64
+            MSVC_ARCH: amd64
+            HOST: x86_64-w64-cygwin
+            CFLAGS:
+          - ARCH: arm64
+            MSVC_ARCH: amd64_arm64
+            HOST: aarch64-w64-cygwin
+            CFLAGS: /D__aarch64__
+    defaults:
+      run:
+        shell: cmd
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 3
+          fetch-tags: true
+#      - id: cygwin-cache
+#        uses: actions/cache@v2
+#        with:
+#          path: C:\cygwin
+#          key: cygwin-cache
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{matrix.MSVC_ARCH}}
+      - name: Install dependencies
+        run: |
+          choco install cygwin -x64 --params "/InstallDir:C:\cygwin"
+          choco install cyg-get
+          cyg-get autoconf make
+        #if: steps.cygwin-cache.outputs.cache-hit != 'true'
+      - name: Prepare Cygwin
+        run: C:\cygwin\bin\sh -lc "(cd $OLDPWD;)"
+      - name: Configure build
+        run: |
+          C:\cygwin\bin\sh -lc "(cd $OLDPWD; set -o igncr; autoconf;)"
+          C:\cygwin\bin\sh -lc "(cd $OLDPWD; set -o igncr; CFLAGS='/EHsc /GF /Gy /GL /GR- /GS- /MP /DNDEBUG ${{matrix.CFLAGS}}' CC=cl ac_cv_c_bigendian=no ./configure --host=${{matrix.HOST}} %JEMALLOC_PARAMS%;)"
+      - name: Build
+        run: |
+          C:\cygwin\bin\sh -lc "(cd $OLDPWD; set -o igncr; make;)"
+      - name: Upload artifact
+        run: aws s3 cp lib\jemalloc.dll s3://lwjgl-build/nightly/windows/${{matrix.ARCH}}/ %S3_PARAMS%
+      - name: Upload git revision
+        run: |
+          git log --first-parent --pretty=format:%%H HEAD~2..HEAD~1 > jemalloc.dll.git
+          aws s3 cp jemalloc.dll.git s3://lwjgl-build/nightly/windows/${{matrix.ARCH}}/ %S3_PARAMS%
