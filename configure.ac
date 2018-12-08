@@ -289,13 +289,13 @@ if test "x$GCC" = "xyes" ; then
   JE_CFLAGS_ADD([-Wno-missing-field-initializers])
   JE_CFLAGS_ADD([-Wno-missing-attributes])
   JE_CFLAGS_ADD([-pipe])
-  JE_CFLAGS_ADD([-g3])
+  dnl JE_CFLAGS_ADD([-g3])
 elif test "x$je_cv_msvc" = "xyes" ; then
   CC="$CC -nologo"
-  JE_CFLAGS_ADD([-Zi])
+  dnl JE_CFLAGS_ADD([-Zi])
   JE_CFLAGS_ADD([-MT])
   JE_CFLAGS_ADD([-W3])
-  JE_CFLAGS_ADD([-FS])
+  dnl JE_CFLAGS_ADD([-FS])
   JE_APPEND_VS(CPPFLAGS, -I${srcdir}/include/msvc_compat)
 fi
 if test "x$je_cv_cray" = "xyes" ; then
@@ -840,7 +840,8 @@ case "${host}" in
 	if test "x$je_cv_msvc" = "xyes" ; then
 	  importlib="lib"
 	  DSO_LDFLAGS="-LD"
-	  EXTRA_LDFLAGS="-link -DEBUG"
+	  dnl EXTRA_LDFLAGS="-link -DEBUG"
+	  EXTRA_LDFLAGS="/link /OPT:REF,ICF /DLL /LTCG"
 	  CTARGET='-Fo$@'
 	  LDTARGET='-Fe$@'
 	  AR='lib'
@@ -952,6 +953,9 @@ if test "x${je_cv_attribute}" = "xyes" ; then
     JE_CFLAGS_ADD([-fvisibility=hidden])
     JE_CXXFLAGS_ADD([-fvisibility=hidden])
   fi
+fi
+if test "x$GCC" = "xyes" ; then
+  JE_CXXFLAGS_ADD([-mtls-dialect=gnu2])
 fi
 dnl Check for tls_model attribute support (clang 3.0 still lacks support).
 JE_CFLAGS_SAVE()
@@ -1376,8 +1380,8 @@ if test "x$enable_debug" = "x0" ; then
     JE_CXXFLAGS_ADD([-O3])
     JE_CFLAGS_ADD([-funroll-loops])
   elif test "x$je_cv_msvc" = "xyes" ; then
-    JE_CFLAGS_ADD([-O2])
-    JE_CXXFLAGS_ADD([-O2])
+    JE_CFLAGS_ADD([-Ox])
+    JE_CXXFLAGS_ADD([-Ox])
   else
     JE_CFLAGS_ADD([-O])
     JE_CXXFLAGS_ADD([-O])
