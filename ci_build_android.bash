@@ -17,11 +17,20 @@ elif [ "$BUILD_ARCH" == "x64" ]; then
 fi
 
 export TARGET=$NDK_TARGET-linux-android$NDK_SUFFIX
-export PATH=$PATH:$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
+export PATH=$TOOLCHAIN/bin:$PATH
 export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
-export ANDROID_INCLUDE=$TOOLCHAIN/sysroot/usr/include
 
 ./autogen.sh
-./configure
-bash configure --host=$TARGET --prefix=$PWD/$NDK_TARGET-unknown-linux-android$NDK_SUFFIX CC=${TARGET}21-clang CXX=${TARGET}21-clang++ CPPFLAGS="-I$ANDROID_INCLUDE -I$ANDROID_INCLUDE/$TARGET -D__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4=1" LDFLAGS="-L$TOOLCHAIN/sysroot/usr/lib/${TARGET}/${API}" CFLAGS="-fwhole-program-vtables -Wno-int-conversion -Wno-error=implicit-function-declaration"
-make -j4
+./configure \
+  --host=$TARGET \
+  --prefix=${PWD}/build_android-$BUILD_ARCH \
+  || error_code=$?
+
+if [[ "$error_code" -ne 0 ]]; then
+  echo "\n\nCONFIGURE ERROR $error_code , config.log:"
+  cat ${PWD}/builds/unix/config.log
+  exit $error_code
+fi
+
+CFLAGS="-fno-rtti -Wno-int-conversion" CXXFLAGS="-fno-rtti -D__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4=1" make -j4
+make install
