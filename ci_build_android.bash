@@ -27,7 +27,7 @@ if [ $? -ne 0 ]; then
 fi
 
 ./configure \
-  --enable-autogen "$@"
+  --enable-autogen "$@" \
   --host=$TARGET \
   --prefix=${PWD}/build_android-$BUILD_ARCH \
   || error_code=$?
