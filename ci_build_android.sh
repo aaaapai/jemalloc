@@ -64,6 +64,6 @@ fi
 
 if [[ "$error_code" -ne 0 ]]; then
   echo "\n\nCONFIGURE ERROR $error_code , config.log:"
-  cat ./*/config.log
+  cat ./build-aux/config.log
   exit $error_code
 fi
