@@ -19,7 +19,22 @@ fi
 export TARGET=$NDK_TARGET-linux-android$NDK_SUFFIX
 export PATH=$TOOLCHAIN/bin:$PATH
 export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
-
+export thecc=$TOOLCHAIN/bin/${TARGET}${API}-clang
+export thecxx=$TOOLCHAIN/bin/${TARGET}${API}-clang++
+export DLLTOOL=/usr/bin/llvm-dlltool-18
+export CXXFILT=$TOOLCHAIN/bin/llvm-cxxfilt
+export NM=$TOOLCHAIN/bin/llvm-nm
+export CC=$thecc
+export CXX=$thecxx
+export AR=$TOOLCHAIN/bin/llvm-ar
+export AS=$TOOLCHAIN/bin/llvm-as
+export LD=$TOOLCHAIN/bin/ld.lld
+export OBJCOPY=$TOOLCHAIN/bin/llvm-objcopy
+export OBJDUMP=$TOOLCHAIN/bin/llvm-objdump
+export READELF=$TOOLCHAIN/bin/llvm-readelf
+export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
+export STRIP=$TOOLCHAIN/bin/llvm-strip
+export LINK=$TOOLCHAIN/bin/llvm-link
 
 for i in autoconf; do
     echo "$i"
