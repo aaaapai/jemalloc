@@ -1,6 +1,6 @@
 name: Android build
 
-on: [workflow_dispatch]
+on: [push, workflow_dispatch]
 
 jobs:
   build:
@@ -17,4 +17,4 @@ jobs:
     - name: Build for Android ${{matrix.arch}}
       run: |
         export BUILD_ARCH=${{matrix.arch}}
-        bash ci_build_android.bash
+        bash ci_build_android.sh
