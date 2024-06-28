@@ -20,8 +20,14 @@ export TARGET=$NDK_TARGET-linux-android$NDK_SUFFIX
 export PATH=$TOOLCHAIN/bin:$PATH
 export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
 
-./autogen.sh
+echo "./configure --enable-autogen \"$@\""
+if [ $? -ne 0 ]; then
+    echo "Error $? in ./configure"
+    exit 1
+fi
+
 ./configure \
+  --enable-autogen "$@"
   --host=$TARGET \
   --prefix=${PWD}/build_android-$BUILD_ARCH \
   || error_code=$?
