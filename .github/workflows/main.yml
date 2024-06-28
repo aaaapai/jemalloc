@@ -16,4 +16,5 @@ jobs:
 
     - name: Build for Android ${{matrix.arch}}
       run: |
+        export BUILD_ARCH=${{matrix.arch}}
         bash ci_build_android.bash
