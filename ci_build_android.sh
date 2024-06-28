@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 set -e
 
 export ANDROID=1
@@ -19,6 +19,16 @@ fi
 export TARGET=$NDK_TARGET-linux-android$NDK_SUFFIX
 export PATH=$TOOLCHAIN/bin:$PATH
 export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
+
+
+for i in autoconf; do
+    echo "$i"
+    $i
+    if [ $? -ne 0 ]; then
+	echo "Error $? in $i"
+	exit 1
+    fi
+done
 
 echo "./configure --enable-autogen \"$@\""
 if [ $? -ne 0 ]; then
