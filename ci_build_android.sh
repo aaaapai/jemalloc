@@ -2,6 +2,7 @@
 set -e
 
 export ANDROID=1
+export API=24
 
 if   [ "$BUILD_ARCH" == "arm64" ]; then
   export NDK_ABI=arm64-v8a NDK_TARGET=aarch64
@@ -16,7 +17,7 @@ elif [ "$BUILD_ARCH" == "x64" ]; then
   export NDK_ABI=x86_64 NDK_TARGET=x86_64
 fi
 
-export TARGET=$NDK_TARGET-linux-android$NDK_SUFFIX
+export TARGET=$NDK_TARGET-linux-android
 export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
 export CFLAGS="-fno-rtti -Wno-int-conversion -fwhole-program-vtables"
 export CXXFLAGS="-fno-rtti -D__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4=1"
