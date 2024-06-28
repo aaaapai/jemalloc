@@ -12,7 +12,7 @@ elif [ "$BUILD_ARCH" == "x86" ]; then
   # Workaround: LWJGL 3 lacks of x86 Linux libraries
   mkdir -p bin/libs/native/linux/x86/org/lwjgl/glfw
   touch bin/libs/native/linux/x86/org/lwjgl/glfw/libglfw.so
-elif [ "$LWJGL_BUILD_ARCH" == "x64" ]; then
+elif [ "$BUILD_ARCH" == "x64" ]; then
   export NDK_ABI=x86_64 NDK_TARGET=x86_64
 fi
 
@@ -23,5 +23,5 @@ export ANDROID_INCLUDE=$TOOLCHAIN/sysroot/usr/include
 
 ./autogen.sh
 ./configure
-bash configure --host=$TARGET --prefix=$PWD/$NDK_TARGET-unknown-linux-android$NDK_SUFFIX CC=${TARGET}21-clang CXX=${TARGET}21-clang++ CPPFLAGS="-I$ANDROID_INCLUDE -I$ANDROID_INCLUDE/$TARGET -D__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4=1" DLLTOOL=/usr/bin/llvm-dlltool-18 CXXFILT=$TOOLCHAIN/bin/llvm-cxxfilt NM=$TOOLCHAIN/bin/llvm-nm AR=$TOOLCHAIN/bin/llvm-ar AS=$TOOLCHAIN/bin/llvm-as LD=$TOOLCHAIN/bin/ld.lld OBJCOPY=$TOOLCHAIN/bin/llvm-objcopy OBJDUMP=$TOOLCHAIN/bin/llvm-objdump READELF=$TOOLCHAIN/bin/llvm-readelf RANLIB=$TOOLCHAIN/bin/llvm-ranlib STRIP=$TOOLCHAIN/bin/llvm-strip LINK=$TOOLCHAIN/bin/llvm-link LDFLAGS="-L$TOOLCHAIN/sysroot/usr/lib/${TARGET}/${API}" CFLAGS="-fwhole-program-vtables -Wno-int-conversion -Wno-error=implicit-function-declaration"
+bash configure --host=$TARGET --prefix=$PWD/$NDK_TARGET-unknown-linux-android$NDK_SUFFIX CC=${TARGET}21-clang CXX=${TARGET}21-clang++ CPPFLAGS="-I$ANDROID_INCLUDE -I$ANDROID_INCLUDE/$TARGET -D__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4=1" LDFLAGS="-L$TOOLCHAIN/sysroot/usr/lib/${TARGET}/${API}" CFLAGS="-fwhole-program-vtables -Wno-int-conversion -Wno-error=implicit-function-declaration"
 make -j4
