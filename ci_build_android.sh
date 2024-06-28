@@ -17,8 +17,13 @@ elif [ "$BUILD_ARCH" == "x64" ]; then
 fi
 
 export TARGET=$NDK_TARGET-linux-android$NDK_SUFFIX
-export PATH=$TOOLCHAIN/bin:$PATH
 export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
+export CFLAGS="-fno-rtti -Wno-int-conversion -fwhole-program-vtables"
+export CXXFLAGS="-fno-rtti -D__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4=1"
+export ANDROID_INCLUDE=$TOOLCHAIN/sysroot/usr/include
+export CPPFLAGS="-I$ANDROID_INCLUDE -I$ANDROID_INCLUDE/$TARGET "
+export PATH=$TOOLCHAIN/bin:$PATH
+export LDFLAGS="-L$TOOLCHAIN/sysroot/usr/lib/${TARGET}/${API}"
 export thecc=$TOOLCHAIN/bin/${TARGET}${API}-clang
 export thecxx=$TOOLCHAIN/bin/${TARGET}${API}-clang++
 export DLLTOOL=/usr/bin/llvm-dlltool-18
@@ -62,6 +67,3 @@ if [[ "$error_code" -ne 0 ]]; then
   cat ./*/config.log
   exit $error_code
 fi
-
-CFLAGS="-fno-rtti -Wno-int-conversion" CXXFLAGS="-fno-rtti -D__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4=1" make -j4
-make install
