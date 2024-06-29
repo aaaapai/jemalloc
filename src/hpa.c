@@ -378,6 +378,18 @@ static bool
 hpa_try_purge(tsdn_t *tsdn, hpa_shard_t *shard) {
 	malloc_mutex_assert_owner(tsdn, &shard->mtx);
 
+	/*
+	 * Make sure we respect purge interval setting and don't purge
+	 * too frequently.
+	 */
+	if (shard->opts.strict_min_purge_interval) {
+		uint64_t since_last_purge_ms = shard->central->hooks.ms_since(
+		    &shard->last_purge);
+		if (since_last_purge_ms < shard->opts.min_purge_interval_ms) {
+		     return false;
+		}
+	}
+
 	hpdata_t *to_purge = psset_pick_purge(&shard->psset);
 	if (to_purge == NULL) {
 		return false;
