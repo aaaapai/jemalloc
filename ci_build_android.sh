@@ -63,7 +63,6 @@ fi
   || error_code=$?
 
 make
-strip lib/libjemalloc.so
 
 if [[ "$error_code" -ne 0 ]]; then
   echo "\n\nCONFIGURE ERROR $error_code , config.log:"
