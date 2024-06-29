@@ -1,7 +1,6 @@
 #!/bin/sh
 set -e
 
-export ANDROID=1
 export API=24
 
 if   [ "$BUILD_ARCH" == "arm64" ]; then
@@ -20,7 +19,7 @@ fi
 export TARGET=$NDK_TARGET-linux-android
 export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
 export CFLAGS="-flto -Wno-int-conversion -fwhole-program-vtables"
-export CXXFLAGS="-D__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4=1"
+export CXXFLAGS="-DMOZ_CPP_EXCEPTIONS -D__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4=1"
 export ANDROID_INCLUDE=$TOOLCHAIN/sysroot/usr/include
 export CPPFLAGS="-I$ANDROID_INCLUDE -I$ANDROID_INCLUDE/$TARGET "
 export PATH=$TOOLCHAIN/bin:$PATH
