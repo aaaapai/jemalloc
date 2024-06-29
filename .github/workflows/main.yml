@@ -1,6 +1,6 @@
 name: Android build
 
-on: [push, workflow_dispatch]
+on: [workflow_dispatch]
 
 jobs:
   build:
@@ -23,5 +23,5 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: file
-        path: ./
+        path: lib/
         
