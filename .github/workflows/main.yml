@@ -18,3 +18,12 @@ jobs:
       run: |
         export BUILD_ARCH=${{matrix.arch}}
         bash ci_build_android.sh
+
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: file
+        path: |
+          lib
+          bin
+        
