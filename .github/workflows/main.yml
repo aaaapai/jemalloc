@@ -17,7 +17,7 @@ jobs:
     - name: Build for Android ${{matrix.arch}}
       run: |
         export BUILD_ARCH=${{matrix.arch}}
-        bash ci_build_android.sh
+        bash ci_build_android.bash
 
     - name: Upload
       uses: actions/upload-artifact@v4
