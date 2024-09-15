@@ -1,7 +1,7 @@
-#!/bin/sh
+#!/bin/bash
 set -e
 
-export API=24
+export API=21
 
 if   [ "$BUILD_ARCH" == "arm64" ]; then
   export NDK_ABI=arm64-v8a NDK_TARGET=aarch64
@@ -9,17 +9,16 @@ elif [ "$BUILD_ARCH" == "arm32" ]; then
   export NDK_ABI=armeabi-v7a NDK_TARGET=armv7a NDK_SUFFIX=eabi
 elif [ "$BUILD_ARCH" == "x86" ]; then
   export NDK_ABI=x86 NDK_TARGET=i686
-  # Workaround: LWJGL 3 lacks of x86 Linux libraries
-  mkdir -p bin/libs/native/linux/x86/org/lwjgl/glfw
-  touch bin/libs/native/linux/x86/org/lwjgl/glfw/libglfw.so
 elif [ "$BUILD_ARCH" == "x64" ]; then
   export NDK_ABI=x86_64 NDK_TARGET=x86_64
 fi
 
 export TARGET=$NDK_TARGET-linux-android
 export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
-export CFLAGS="-flto=auto -Wno-int-conversion -fwhole-program-vtables"
+export CFLAGS="-flto=thin -Wno-int-conversion -fwhole-program-vtables"
 export CXXFLAGS="-D__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4=1"
+export CONFIGURE_FLAGS="--with-malloc-conf=percpu_arena:percpu,background_thread:true" 
+export EXTRA_CFLAGS="-O3 -Wno-array-bounds -flto=thin -Wno-int-conversion -fwhole-program-vtables"
 export ANDROID_INCLUDE=$TOOLCHAIN/sysroot/usr/include
 export CPPFLAGS="-I$ANDROID_INCLUDE -I$ANDROID_INCLUDE/$TARGET "
 export PATH=$TOOLCHAIN/bin:$PATH
