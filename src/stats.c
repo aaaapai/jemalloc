@@ -324,12 +324,12 @@ stats_arena_bins_print(emitter_t *emitter, bool mutex, unsigned i,
 
 	COL_HDR(row, size, NULL, right, 20, size)
 	COL_HDR(row, ind, NULL, right, 4, unsigned)
-	COL_HDR(row, allocated, NULL, right, 13, size)
-	COL_HDR(row, nmalloc, NULL, right, 13, uint64)
+	COL_HDR(row, allocated, NULL, right, 14, size)
+	COL_HDR(row, nmalloc, NULL, right, 14, uint64)
 	COL_HDR(row, nmalloc_ps, "(#/sec)", right, 8, uint64)
-	COL_HDR(row, ndalloc, NULL, right, 13, uint64)
+	COL_HDR(row, ndalloc, NULL, right, 14, uint64)
 	COL_HDR(row, ndalloc_ps, "(#/sec)", right, 8, uint64)
-	COL_HDR(row, nrequests, NULL, right, 13, uint64)
+	COL_HDR(row, nrequests, NULL, right, 15, uint64)
 	COL_HDR(row, nrequests_ps, "(#/sec)", right, 10, uint64)
 	COL_HDR_DECLARE(prof_live_requested);
 	COL_HDR_DECLARE(prof_live_count);
@@ -1564,7 +1564,8 @@ stats_general_print(emitter_t *emitter) {
 	OPT_WRITE_SIZE_T("hpa_hugification_threshold")
 	OPT_WRITE_UINT64("hpa_hugify_delay_ms")
 	OPT_WRITE_UINT64("hpa_min_purge_interval_ms")
-	OPT_WRITE_BOOL("hpa_strict_min_purge_interval")
+	OPT_WRITE_BOOL("experimental_hpa_strict_min_purge_interval")
+	OPT_WRITE_SSIZE_T("experimental_hpa_max_purge_nhp")
 	if (je_mallctl("opt.hpa_dirty_mult", (void *)&u32v, &u32sz, NULL, 0)
 	    == 0) {
 		/*
@@ -1599,6 +1600,7 @@ stats_general_print(emitter_t *emitter) {
 	OPT_WRITE_BOOL("utrace")
 	OPT_WRITE_BOOL("xmalloc")
 	OPT_WRITE_BOOL("experimental_infallible_new")
+	OPT_WRITE_BOOL("experimental_tcache_gc")
 	OPT_WRITE_SIZE_T("max_batched_size")
 	OPT_WRITE_SIZE_T("remote_free_max")
 	OPT_WRITE_SIZE_T("remote_free_max_batch")
@@ -1896,7 +1898,7 @@ stats_print_helper(emitter_t *emitter, bool merged, bool destroyed,
 		size_t mib[3];
 		size_t miblen = sizeof(mib) / sizeof(size_t);
 		size_t sz;
-		VARIABLE_ARRAY(bool, initialized, narenas);
+		VARIABLE_ARRAY_UNSAFE(bool, initialized, narenas);
 		bool destroyed_initialized;
 		unsigned i, ninitialized;
 

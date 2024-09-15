@@ -601,6 +601,24 @@ cache_bin_nitems_get_remote(cache_bin_t *bin, cache_bin_sz_t *ncached,
 }
 
 /*
+ * For small bins, used to calculate how many items to fill at a time.
+ * The final nfill is calculated by (ncached_max >> (base - offset)).
+ */
+typedef struct cache_bin_fill_ctl_s cache_bin_fill_ctl_t;
+struct cache_bin_fill_ctl_s {
+	uint8_t base;
+	uint8_t offset;
+};
+
+/*
+ * Limit how many items can be flushed in a batch (Which is the upper bound
+ * for the nflush parameter in tcache_bin_flush_impl()).
+ * This is to avoid stack overflow when we do batch edata look up, which
+ * reserves a nflush * sizeof(emap_batch_lookup_result_t) stack variable.
+ */
+#define CACHE_BIN_NFLUSH_BATCH_MAX (VARIABLE_ARRAY_SIZE_MAX >> LG_SIZEOF_PTR)
+
+/*
  * Filling and flushing are done in batch, on arrays of void *s.  For filling,
  * the arrays go forward, and can be accessed with ordinary array arithmetic.
  * For flushing, we work from the end backwards, and so need to use special

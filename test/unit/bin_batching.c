@@ -45,9 +45,16 @@ increment_push_failure(size_t push_idx) {
 		atomic_fetch_add_zu(&push_failure_count, 1, ATOMIC_RELAXED);
 	} else {
 		assert_zu_lt(push_idx, 4, "Only 4 elems");
-		volatile int x = 10000;
+		volatile size_t x = 10000;
 		while (--x) {
 			/* Spin for a while, to try to provoke a failure. */
+			if (x == push_idx) {
+#ifdef _WIN32
+				SwitchToThread();
+#else
+				sched_yield();
+#endif
+			}
 		}
 	}
 }
@@ -111,7 +118,8 @@ stress_run(void (*main_thread_fn)(), int nruns) {
 	bin_batching_test_after_unlock_hook = &increment_slab_dalloc_count;
 
 	atomic_store_zu(&push_failure_count, 0, ATOMIC_RELAXED);
-	atomic_store_zu(&pop_attempt_results[2], 0, ATOMIC_RELAXED);
+	atomic_store_zu(&pop_attempt_results[0], 0, ATOMIC_RELAXED);
+	atomic_store_zu(&pop_attempt_results[1], 0, ATOMIC_RELAXED);
 	atomic_store_zu(&dalloc_zero_slab_count, 0, ATOMIC_RELAXED);
 	atomic_store_zu(&dalloc_nonzero_slab_count, 0, ATOMIC_RELAXED);
 	atomic_store_zu(&dalloc_nonempty_list_count, 0, ATOMIC_RELAXED);
