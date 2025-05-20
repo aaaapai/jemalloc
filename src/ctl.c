@@ -106,7 +106,6 @@ CTL_PROTO(opt_hpa_hugify_delay_ms)
 CTL_PROTO(opt_hpa_hugify_sync)
 CTL_PROTO(opt_hpa_min_purge_interval_ms)
 CTL_PROTO(opt_experimental_hpa_max_purge_nhp)
-CTL_PROTO(opt_hpa_peak_demand_window_ms)
 CTL_PROTO(opt_hpa_dirty_mult)
 CTL_PROTO(opt_hpa_sec_nshards)
 CTL_PROTO(opt_hpa_sec_max_alloc)
@@ -489,8 +488,6 @@ static const ctl_named_node_t opt_node[] = {
 	{NAME("hpa_min_purge_interval_ms"), CTL(opt_hpa_min_purge_interval_ms)},
 	{NAME("experimental_hpa_max_purge_nhp"),
 		CTL(opt_experimental_hpa_max_purge_nhp)},
-	{NAME("hpa_peak_demand_window_ms"),
-	    CTL(opt_hpa_peak_demand_window_ms)},
 	{NAME("hpa_dirty_mult"), CTL(opt_hpa_dirty_mult)},
 	{NAME("hpa_sec_nshards"),	CTL(opt_hpa_sec_nshards)},
 	{NAME("hpa_sec_max_alloc"),	CTL(opt_hpa_sec_max_alloc)},
@@ -2260,8 +2257,6 @@ CTL_RO_NL_GEN(opt_hpa_min_purge_interval_ms, opt_hpa_opts.min_purge_interval_ms,
     uint64_t)
 CTL_RO_NL_GEN(opt_experimental_hpa_max_purge_nhp,
     opt_hpa_opts.experimental_max_purge_nhp, ssize_t)
-CTL_RO_NL_GEN(opt_hpa_peak_demand_window_ms,
-    opt_hpa_opts.peak_demand_window_ms, uint64_t)
 
 /*
  * This will have to change before we publicly document this option; fxp_t and
