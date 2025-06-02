@@ -37,9 +37,7 @@ static hpa_shard_opts_t test_hpa_shard_opts_default = {
 	/* min_purge_interval_ms */
 	5 * 1000,
 	/* experimental_max_purge_nhp */
-	-1,
-	/* peak_demand_window_ms */
-	0
+	-1
 };
 
 static hpa_shard_t *
