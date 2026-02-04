@@ -49,7 +49,6 @@ done
 
 ./autogen.sh
 ./configure \
-  --enable-autogen "$@" \
   --host=$TARGET \
   --disable-initial-exec-tls \
   --with-jemalloc-prefix='je_' \
