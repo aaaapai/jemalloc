@@ -68,9 +68,10 @@ EOF
   --prefix=${PWD}/build_android-$BUILD_ARCH \
   || error_code=$?
 
-if [ $? -ne 0 ]; then
-    echo "Error $? in ./configure"
-    exit 1
+if [ "$error_code" -ne 0 ]; then
+    echo "Error $error_code in ./configure"
+	cat config.log
+    exit $error_code
 fi
 
 make
