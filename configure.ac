@@ -725,7 +725,7 @@ case "${host}" in
 	importlib="${so}"
 	force_tls="0"
 	DSO_LDFLAGS='-shared -Wl,-install_name,$(LIBDIR)/$(@F)'
-	SOREV="${rev}.${so}"
+	SOREV="${so}"
 	sbrk_deprecated="1"
 	SYM_PREFIX="_"
 	if test "${LG_SIZEOF_PTR}" = "3"; then
