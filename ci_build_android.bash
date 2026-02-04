@@ -47,11 +47,13 @@ for i in autoconf; do
     fi
 done
 
+<< EOF
 echo "./configure --enable-autogen \"$@\""
 if [ $? -ne 0 ]; then
     echo "Error $? in ./configure"
     exit 1
 fi
+EOF
 
 ./autogen.sh
 ./configure \
@@ -65,6 +67,11 @@ fi
   --enable-doc=no \
   --prefix=${PWD}/build_android-$BUILD_ARCH \
   || error_code=$?
+
+if [ $? -ne 0 ]; then
+    echo "Error $? in ./configure"
+    exit 1
+fi
 
 make
 
