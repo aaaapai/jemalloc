@@ -70,7 +70,7 @@ EOF
 
 if [ "$error_code" -ne 0 ]; then
     echo "Error $error_code in ./configure"
-	cat config.log
+	tail -1000 config.log
     exit $error_code
 fi
 
