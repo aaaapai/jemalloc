@@ -15,7 +15,7 @@ fi
 
 export TARGET=$NDK_TARGET-linux-android
 export TOOLCHAIN=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64
-export CFLAGS="-O3 -Wno-array-bounds -flto=thin -Wno-int-conversion -fwhole-program-vtables -Wno-ignored-attributes -Wno-array-bounds -Wno-unknown-warning-option -Wno-ignored-attributes -flto=thin -Wno-int-conversion -fwhole-program-vtables -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -D__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4=1"
+export CFLAGS="-O3 -Wno-array-bounds -flto=thin -Wno-int-conversion -fwhole-program-vtables -Wno-ignored-attributes -Wno-array-bounds -Wno-unknown-warning-option -Wno-ignored-attributes -flto=thin -Wno-int-conversion -fwhole-program-vtables -D__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4=1"
 export CXXFLAGS="-D__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4=1"
 export ANDROID_INCLUDE=$TOOLCHAIN/sysroot/usr/include
 export CPPFLAGS="-I$ANDROID_INCLUDE -I$ANDROID_INCLUDE/$TARGET -mllvm -polly"
