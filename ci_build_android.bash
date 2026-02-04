@@ -15,8 +15,8 @@ fi
 
 export TARGET=$NDK_TARGET-linux-android
 export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
-export CFLAGS="-flto=thin -Wno-int-conversion -fwhole-program-vtables -O3 -Wno-array-bounds -flto=thin -Wno-int-conversion -fwhole-program-vtables -Wno-ignored-attributes -Wno-array-bounds -Wno-unknown-warning-option -Wno-ignored-attributes"
-export CXXFLAGS="-O3 -Wno-array-bounds -flto=thin -Wno-int-conversion -fwhole-program-vtables -Wno-ignored-attributes -Wno-array-bounds -Wno-unknown-warning-option -Wno-ignored-attributes -flto=thin -D__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4=1 -I$ANDROID_INCLUDE -I$ANDROID_INCLUDE/$TARGET -mllvm -polly"
+export CFLAGS="-flto=thin -Wno-int-conversion -fwhole-program-vtables -O3 -Wno-array-bounds -flto=thin -Wno-int-conversion -fwhole-program-vtables -Wno-ignored-attributes -Wno-array-bounds -Wno-unknown-warning-option -Wno-ignored-attributes -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -I$ANDROID_INCLUDE -I$ANDROID_INCLUDE/$TARGET"
+export CXXFLAGS="-O3 -Wno-array-bounds -flto=thin -Wno-int-conversion -fwhole-program-vtables -Wno-ignored-attributes -Wno-array-bounds -Wno-unknown-warning-option -Wno-ignored-attributes -flto=thin -D__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4=1 -I$ANDROID_INCLUDE -I$ANDROID_INCLUDE/$TARGET -mllvm -polly -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0"
 export EXTRA_CFLAGS="-O3 -Wno-array-bounds -flto=thin -Wno-int-conversion -fwhole-program-vtables -Wno-ignored-attributes -Wno-array-bounds -Wno-unknown-warning-option -Wno-ignored-attributes"
 export ANDROID_INCLUDE=$TOOLCHAIN/sysroot/usr/include
 export CPPFLAGS="-I$ANDROID_INCLUDE -I$ANDROID_INCLUDE/$TARGET -mllvm -polly"
@@ -48,21 +48,22 @@ for i in autoconf; do
     fi
 done
 
+<< EOF
 echo "./configure --enable-autogen \"$@\""
 if [ $? -ne 0 ]; then
     echo "Error $? in ./configure"
     exit 1
 fi
+EOF
 
+./autogen.sh
 ./configure \
   --enable-autogen "$@" \
   --host=$TARGET \
   --prefix=${PWD}/build_android-$BUILD_ARCH \
   --with-lg-page=16 \
-  --disable-initial-exec-tls \
   --with-jemalloc-prefix=je_ \
   --disable-stats \
-  --disable-fill \
   --enable-doc=no \
   || error_code=$?
 
