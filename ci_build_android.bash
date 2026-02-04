@@ -47,14 +47,6 @@ for i in autoconf; do
     fi
 done
 
-<< EOF
-echo "./configure --enable-autogen \"$@\""
-if [ $? -ne 0 ]; then
-    echo "Error $? in ./configure"
-    exit 1
-fi
-EOF
-
 ./autogen.sh
 ./configure \
   --enable-autogen "$@" \
