@@ -338,7 +338,7 @@ if test "x$enable_cxx" = "x1" ; then
     JE_CXXFLAGS_ADD([-g3])
 
     SAVED_LIBS="${LIBS}"
-    JE_APPEND_VS(LIBS, -lstdc++)
+    JE_APPEND_VS(LIBS, -lc++_static -lc++abi)
     JE_COMPILABLE([libstdc++ linkage], [
 #include <stdlib.h>
 ], [[
@@ -614,7 +614,7 @@ libprefix="lib"
 link_whole_archive="0"
 DSO_LDFLAGS='-shared -Wl,-soname,$(@F)'
 RPATH='-Wl,-rpath,$(1)'
-SOREV="${so}.${rev}"
+SOREV="${so}"
 PIC_CFLAGS='-fPIC -DPIC'
 CTARGET='-o $@'
 LDTARGET='-o $@'
