@@ -22,7 +22,7 @@ export EXTRA_CFLAGS="-O3 -Wno-array-bounds -flto=thin -Wno-int-conversion -fwhol
 export ANDROID_INCLUDE=$TOOLCHAIN/sysroot/usr/include
 export CPPFLAGS="-I$ANDROID_INCLUDE -I$ANDROID_INCLUDE/$TARGET -mllvm -polly"
 export PATH=$TOOLCHAIN/bin:$PATH
-export LDFLAGS="-L$TOOLCHAIN/sysroot/usr/lib/${TARGET}/${API} -lc++abi -lc++_static"
+export LDFLAGS="-L$TOOLCHAIN/sysroot/usr/lib/${TARGET}/${API} -lc++abi -lc++_static -lc -lm"
 export thecc=$TOOLCHAIN/bin/${TARGET}${API}-clang
 export thecxx=$TOOLCHAIN/bin/${TARGET}${API}-clang++
 export DLLTOOL=/usr/bin/llvm-dlltool-21
