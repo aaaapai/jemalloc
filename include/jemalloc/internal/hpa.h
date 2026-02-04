@@ -31,8 +31,6 @@ struct hpa_central_s {
 	size_t eden_len;
 	/* Source for metadata. */
 	base_t *base;
-	/* Number of grow operations done on this hpa_central_t. */
-	uint64_t age_counter;
 
 	/* The HPA hooks. */
 	hpa_hooks_t hooks;
@@ -61,6 +59,14 @@ struct hpa_shard_nonderived_stats_s {
 	 * Guarded by mtx.
 	 */
 	uint64_t nhugifies;
+
+	/*
+	 * The number of times we've tried to hugify a pageslab, but failed.
+	 *
+	 * Guarded by mtx.
+	 */
+	uint64_t nhugify_failures;
+
 	/*
 	 * The number of times we've dehugified a pageslab.
 	 *
@@ -143,6 +149,7 @@ struct hpa_shard_s {
 	nstime_t last_purge;
 };
 
+bool hpa_hugepage_size_exceeds_limit(void);
 /*
  * Whether or not the HPA can be used given the current configuration.  This is
  * is not necessarily a guarantee that it backs its allocations by hugepages,

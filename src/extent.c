@@ -12,6 +12,14 @@
 /* Data. */
 
 size_t opt_lg_extent_max_active_fit = LG_EXTENT_MAX_ACTIVE_FIT_DEFAULT;
+/* This option is intended for kernel tuning, not app tuning. */
+size_t opt_process_madvise_max_batch =
+#ifdef JEMALLOC_HAVE_PROCESS_MADVISE
+    PROCESS_MADVISE_MAX_BATCH_DEFAULT;
+#else
+    0
+#endif
+    ;
 
 static bool extent_commit_impl(tsdn_t *tsdn, ehooks_t *ehooks, edata_t *edata,
     size_t offset, size_t length, bool growing_retained);
@@ -639,6 +647,55 @@ extent_recycle(tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks, ecache_t *ecache,
 	return edata;
 }
 
+static void
+extent_handle_huge_arena_thp(tsdn_t *tsdn, pac_thp_t *pac_thp,
+    edata_cache_t *edata_cache, void *addr, size_t size) {
+	assert(opt_huge_arena_pac_thp);
+	assert(opt_metadata_thp != metadata_thp_disabled);
+	/*
+	 * With rounding up the given memory region [addr, addr + size) to
+	 * the huge page region that it crosses boundaries with,
+	 * essentially we're aligning the start addr down and the end addr
+	 * up to the nearest HUGEPAGE boundaries. The memory overhead can
+	 * be within the range of [0, 2 * (HUGEPAGE - 1)].
+	 */
+	void *huge_addr = HUGEPAGE_ADDR2BASE(addr);
+	void *huge_end = HUGEPAGE_ADDR2BASE((void *)((byte_t *)addr +
+	    (uintptr_t)(size + HUGEPAGE - 1)));
+	assert((uintptr_t)huge_end > (uintptr_t)huge_addr);
+
+	size_t huge_size = (uintptr_t)huge_end - (uintptr_t)huge_addr;
+	assert(huge_size <= (size + ((HUGEPAGE - 1) << 1)) &&
+		    huge_size >= size);
+
+	if (opt_metadata_thp == metadata_thp_always ||
+	    pac_thp->auto_thp_switched) {
+		pages_huge(huge_addr, huge_size);
+	} else {
+		assert(opt_metadata_thp == metadata_thp_auto);
+		edata_t *edata = edata_cache_get(tsdn, edata_cache);
+
+		malloc_mutex_lock(tsdn, &pac_thp->lock);
+		/* Can happen if the switch is turned on during edata retrieval. */
+		if (pac_thp->auto_thp_switched) {
+			malloc_mutex_unlock(tsdn, &pac_thp->lock);
+			pages_huge(huge_addr, huge_size);
+			if (edata != NULL) {
+				edata_cache_put(tsdn, edata_cache, edata);
+			}
+		} else {
+			if (edata != NULL) {
+				edata_addr_set(edata, huge_addr);
+				edata_size_set(edata, huge_size);
+				edata_list_active_append(&pac_thp->thp_lazy_list, edata);
+				atomic_fetch_add_u(&pac_thp->n_thp_lazy, 1, ATOMIC_RELAXED);
+			}
+			malloc_mutex_unlock(tsdn, &pac_thp->lock);
+		}
+		malloc_mutex_assert_not_owner(tsdn, &pac_thp->lock);
+	}
+}
+
 /*
  * If virtual memory is retained, create increasingly larger extents from which
  * to split requested extents in order to limit the total number of disjoint
@@ -681,10 +738,10 @@ extent_grow_retained(tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks,
 		goto label_err;
 	}
 
-	edata_init(edata, ecache_ind_get(&pac->ecache_retained), ptr,
-	    alloc_size, false, SC_NSIZES, extent_sn_next(pac),
-	    extent_state_active, zeroed, committed, EXTENT_PAI_PAC,
-	    EXTENT_IS_HEAD);
+	unsigned ind = ecache_ind_get(&pac->ecache_retained);
+	edata_init(edata, ind, ptr, alloc_size, false, SC_NSIZES,
+	    extent_sn_next(pac), extent_state_active, zeroed, committed,
+	    EXTENT_PAI_PAC, EXTENT_IS_HEAD);
 
 	if (extent_register_no_gdump_add(tsdn, pac, edata)) {
 		edata_cache_put(tsdn, pac->edata_cache, edata);
@@ -760,6 +817,15 @@ extent_grow_retained(tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks,
 	exp_grow_size_commit(&pac->exp_grow, exp_grow_skip);
 	malloc_mutex_unlock(tsdn, &pac->grow_mtx);
 
+	if (huge_arena_pac_thp.thp_madvise) {
+		/* Avoid using HUGEPAGE when the grow size is less than HUGEPAGE. */
+		if (ind != 0 && ind == huge_arena_ind && ehooks_are_default(ehooks) &&
+		    likely(alloc_size >= HUGEPAGE)) {
+			extent_handle_huge_arena_thp(tsdn, &huge_arena_pac_thp,
+			    pac->edata_cache, ptr, alloc_size);
+		}
+	}
+
 	if (config_prof) {
 		/* Adjust gdump stats now that extent is final size. */
 		extent_gdump_add(tsdn, edata);
@@ -822,9 +888,10 @@ extent_coalesce(tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks, ecache_t *ecache,
 
 static edata_t *
 extent_try_coalesce_impl(tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks,
-    ecache_t *ecache, edata_t *edata, bool *coalesced) {
+    ecache_t *ecache, edata_t *edata, size_t max_size, bool *coalesced) {
 	assert(!edata_guarded_get(edata));
 	assert(coalesced != NULL);
+	*coalesced = false;
 	/*
 	 * We avoid checking / locking inactive neighbors for large size
 	 * classes, since they are eagerly coalesced on deallocation which can
@@ -841,7 +908,8 @@ extent_try_coalesce_impl(tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks,
 		/* Try to coalesce forward. */
 		edata_t *next = emap_try_acquire_edata_neighbor(tsdn, pac->emap,
 		    edata, EXTENT_PAI_PAC, ecache->state, /* forward */ true);
-		if (next != NULL) {
+		size_t max_next_neighbor = max_size > edata_size_get(edata) ?  max_size - edata_size_get(edata) : 0;
+		if (next != NULL && edata_size_get(next) <= max_next_neighbor) {
 			if (!extent_coalesce(tsdn, pac, ehooks, ecache, edata,
 			    next, true)) {
 				if (ecache->delay_coalesce) {
@@ -856,7 +924,8 @@ extent_try_coalesce_impl(tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks,
 		/* Try to coalesce backward. */
 		edata_t *prev = emap_try_acquire_edata_neighbor(tsdn, pac->emap,
 		    edata, EXTENT_PAI_PAC, ecache->state, /* forward */ false);
-		if (prev != NULL) {
+		size_t max_prev_neighbor = max_size > edata_size_get(edata) ?  max_size - edata_size_get(edata) : 0;
+		if (prev != NULL && edata_size_get(prev) <= max_prev_neighbor) {
 			if (!extent_coalesce(tsdn, pac, ehooks, ecache, edata,
 			    prev, false)) {
 				edata = prev;
@@ -880,14 +949,14 @@ static edata_t *
 extent_try_coalesce(tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks,
     ecache_t *ecache, edata_t *edata, bool *coalesced) {
 	return extent_try_coalesce_impl(tsdn, pac, ehooks, ecache, edata,
-	    coalesced);
+	    SC_LARGE_MAXCLASS, coalesced);
 }
 
 static edata_t *
 extent_try_coalesce_large(tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks,
-    ecache_t *ecache, edata_t *edata, bool *coalesced) {
+    ecache_t *ecache, edata_t *edata, size_t max_size, bool *coalesced) {
 	return extent_try_coalesce_impl(tsdn, pac, ehooks, ecache, edata,
-	    coalesced);
+	    max_size, coalesced);
 }
 
 /* Purge a single extent to retained / unmapped directly. */
@@ -937,11 +1006,35 @@ extent_record(tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks, ecache_t *ecache,
 	} else if (edata_size_get(edata) >= SC_LARGE_MINCLASS) {
 		assert(ecache == &pac->ecache_dirty);
 		/* Always coalesce large extents eagerly. */
+		/**
+		* Maximum size limit (max_size) for large extents waiting to be coalesced
+		* in dirty ecache.
+		*
+		* When set to a non-zero value, this parameter restricts the maximum size
+		* of large extents after coalescing. If the combined size of two extents
+		* would exceed this threshold, the coalescing operation is skipped.
+		*
+		* This improves dirty ecache reuse efficiency by:
+		* - Maintaining appropriately sized extents that match common allocation requests
+		* - Limiting large extent coalescence to prevent overly large extents that are
+		*   less likely to be reused efficiently
+		* - Setting lg_max_coalesce for large extent merging scenarios, similar to how
+		*   lg_max_fit is used during extent reuse
+		*
+		* Note that during extent decay/purge operations, no coalescing restrictions
+		* are applied to dirty ecache despite the delay_coalesce setting. This ensures
+		* that while improving dirty ecache reuse efficiency, we don't compromise
+		* the final coalescing that happens during the transition from dirty ecache
+		* to muzzy/retained ecache states.
+		*/
+		unsigned lg_max_coalesce = (unsigned)opt_lg_extent_max_active_fit;
+		size_t edata_size = edata_size_get(edata);
+		size_t max_size = (SC_LARGE_MAXCLASS >> lg_max_coalesce) > edata_size ? (edata_size << lg_max_coalesce) : SC_LARGE_MAXCLASS;
 		bool coalesced;
 		do {
 			assert(edata_state_get(edata) == extent_state_active);
 			edata = extent_try_coalesce_large(tsdn, pac, ehooks,
-			    ecache, edata, &coalesced);
+			    ecache, edata, max_size, &coalesced);
 		} while (coalesced);
 		if (edata_size_get(edata) >=
 		    atomic_load_zu(&pac->oversize_threshold, ATOMIC_RELAXED)
@@ -1031,6 +1124,29 @@ extent_alloc_wrapper(tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks,
 	return edata;
 }
 
+static void
+extent_dalloc_wrapper_finish(tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks,
+    edata_t *edata) {
+	if (config_prof) {
+		extent_gdump_sub(tsdn, edata);
+	}
+	extent_record(tsdn, pac, ehooks, &pac->ecache_retained, edata);
+}
+
+void
+extent_dalloc_wrapper_purged(tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks,
+    edata_t *edata) {
+	assert(edata_pai_get(edata) == EXTENT_PAI_PAC);
+	witness_assert_depth_to_rank(tsdn_witness_tsdp_get(tsdn),
+	    WITNESS_RANK_CORE, 0);
+
+	/* Verify that will not go down the dalloc / munmap route. */
+	assert(ehooks_dalloc_will_fail(ehooks));
+
+	edata_zeroed_set(edata, true);
+	extent_dalloc_wrapper_finish(tsdn, pac, ehooks, edata);
+}
+
 void
 extent_dalloc_wrapper(tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks,
     edata_t *edata) {
@@ -1076,11 +1192,7 @@ extent_dalloc_wrapper(tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks,
 	}
 	edata_zeroed_set(edata, zeroed);
 
-	if (config_prof) {
-		extent_gdump_sub(tsdn, edata);
-	}
-
-	extent_record(tsdn, pac, ehooks, &pac->ecache_retained, edata);
+	extent_dalloc_wrapper_finish(tsdn, pac, ehooks, edata);
 }
 
 void

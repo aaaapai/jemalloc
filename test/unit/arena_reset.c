@@ -78,7 +78,7 @@ vsalloc(tsdn_t *tsdn, const void *ptr) {
 		return 0;
 	}
 
-	return sz_index2size(full_alloc_ctx.szind);
+	return edata_usize_get(full_alloc_ctx.edata);
 }
 
 static unsigned

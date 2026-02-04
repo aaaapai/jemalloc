@@ -46,7 +46,15 @@ size_t oversize_threshold = OVERSIZE_THRESHOLD_DEFAULT;
 
 uint32_t arena_bin_offsets[SC_NBINS];
 
-static unsigned huge_arena_ind;
+/*
+ * a0 is used to handle huge requests before malloc init completes. After
+ * that,the huge_arena_ind is updated to point to the actual huge arena,
+ * which is the last one of the auto arenas.
+ */
+unsigned huge_arena_ind = 0;
+bool opt_huge_arena_pac_thp = false;
+pac_thp_t huge_arena_pac_thp = {.thp_madvise = false,
+    .auto_thp_switched = false, .n_thp_lazy = ATOMIC_INIT(0)};
 
 const arena_config_t arena_config_default = {
 	/* .extent_hooks = */ (extent_hooks_t *)&ehooks_default_extent_hooks,
@@ -145,8 +153,13 @@ arena_stats_merge(tsdn_t *tsdn, arena_t *arena, unsigned *nthreads,
 		assert(nmalloc - ndalloc <= SIZE_T_MAX);
 		size_t curlextents = (size_t)(nmalloc - ndalloc);
 		lstats[i].curlextents += curlextents;
-		astats->allocated_large +=
-		    curlextents * sz_index2size(SC_NBINS + i);
+
+		uint64_t active_bytes = locked_read_u64(tsdn,
+		    LOCKEDINT_MTX(arena->stats.mtx),
+		    &arena->stats.lstats[i].active_bytes);
+		locked_inc_u64_unsynchronized(
+		    &lstats[i].active_bytes, active_bytes);
+		astats->allocated_large += active_bytes;
 	}
 
 	pa_shard_stats_merge(tsdn, &arena->pa_shard, &astats->pa_shard_stats,
@@ -315,6 +328,9 @@ arena_large_malloc_stats_update(tsdn_t *tsdn, arena_t *arena, size_t usize) {
 		LOCKEDINT_MTX_LOCK(tsdn, arena->stats.mtx);
 		locked_inc_u64(tsdn, LOCKEDINT_MTX(arena->stats.mtx),
 			&arena->stats.lstats[hindex].nmalloc, 1);
+		locked_inc_u64(tsdn, LOCKEDINT_MTX(arena->stats.mtx),
+		    &arena->stats.lstats[hindex].active_bytes,
+		    usize);
 		LOCKEDINT_MTX_UNLOCK(tsdn, arena->stats.mtx);
 	}
 }
@@ -338,6 +354,9 @@ arena_large_dalloc_stats_update(tsdn_t *tsdn, arena_t *arena, size_t usize) {
 		LOCKEDINT_MTX_LOCK(tsdn, arena->stats.mtx);
 		locked_inc_u64(tsdn, LOCKEDINT_MTX(arena->stats.mtx),
 			&arena->stats.lstats[hindex].ndalloc, 1);
+		locked_dec_u64(tsdn, LOCKEDINT_MTX(arena->stats.mtx),
+		    &arena->stats.lstats[hindex].active_bytes,
+		    usize);
 		LOCKEDINT_MTX_UNLOCK(tsdn, arena->stats.mtx);
 	}
 }
@@ -802,7 +821,7 @@ arena_reset(tsd_t *tsd, arena_t *arena) {
 		assert(alloc_ctx.szind != SC_NSIZES);
 
 		if (config_stats || (config_prof && opt_prof)) {
-			usize = sz_index2size(alloc_ctx.szind);
+			usize = emap_alloc_ctx_usize_get(&alloc_ctx);
 			assert(usize == isalloc(tsd_tsdn(tsd), ptr));
 		}
 		/* Remove large allocation from prof sample set. */
@@ -1346,7 +1365,7 @@ arena_malloc_hard(tsdn_t *tsdn, arena_t *arena, size_t size, szind_t ind,
 		assert(sz_can_use_slab(size));
 		return arena_malloc_small(tsdn, arena, ind, zero);
 	} else {
-		return large_malloc(tsdn, arena, sz_index2size(ind), zero);
+		return large_malloc(tsdn, arena, sz_s2u(size), zero);
 	}
 }
 
@@ -1789,8 +1808,8 @@ arena_new(tsdn_t *tsdn, unsigned ind, const arena_config_t *config) {
 	 * We turn on the HPA if set to.  There are two exceptions:
 	 * - Custom extent hooks (we should only return memory allocated from
 	 *   them in that case).
-	 * - Arena 0 initialization.  In this case, we're mid-bootstrapping, and
-	 *   so arena_hpa_global is not yet initialized.
+	 * - Arena 0 initialization.  In this case, we're mid-bootstrapping,
+	 *   and so background_thread_enabled is not yet initialized.
 	 */
 	if (opt_hpa && ehooks_are_default(base_ehooks_get(base)) && ind != 0) {
 		hpa_shard_opts_t hpa_shard_opts = opt_hpa_opts;
@@ -1876,8 +1895,9 @@ arena_choose_huge(tsd_t *tsd) {
 }
 
 bool
-arena_init_huge(arena_t *a0) {
+arena_init_huge(tsdn_t *tsdn, arena_t *a0) {
 	bool huge_enabled;
+	assert(huge_arena_ind == 0);
 
 	/* The threshold should be large size class. */
 	if (opt_oversize_threshold > SC_LARGE_MAXCLASS ||
@@ -1888,10 +1908,23 @@ arena_init_huge(arena_t *a0) {
 	} else {
 		/* Reserve the index for the huge arena. */
 		huge_arena_ind = narenas_total_get();
+		assert(huge_arena_ind != 0);
 		oversize_threshold = opt_oversize_threshold;
 		/* a0 init happened before malloc_conf_init. */
 		atomic_store_zu(&a0->pa_shard.pac.oversize_threshold,
 		    oversize_threshold, ATOMIC_RELAXED);
+		/* Initialize huge_arena_pac_thp fields. */
+		base_t *b0 = a0->base;
+		/* Make sure that b0 thp auto-switch won't happen concurrently here. */
+		malloc_mutex_lock(tsdn, &b0->mtx);
+		(&huge_arena_pac_thp)->thp_madvise = opt_huge_arena_pac_thp &&
+		    metadata_thp_enabled() && (opt_thp == thp_mode_default) &&
+		    (init_system_thp_mode == thp_mode_default);
+		(&huge_arena_pac_thp)->auto_thp_switched = b0->auto_thp_switched;
+		malloc_mutex_init(&(&huge_arena_pac_thp)->lock, "pac_thp",
+		    WITNESS_RANK_LEAF, malloc_mutex_rank_exclusive);
+		edata_list_active_init(&(&huge_arena_pac_thp)->thp_lazy_list);
+		malloc_mutex_unlock(tsdn, &b0->mtx);
 		huge_enabled = true;
 	}
 

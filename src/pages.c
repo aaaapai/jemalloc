@@ -568,6 +568,30 @@ pages_nohuge_unaligned(void *addr, size_t size) {
 }
 
 bool
+pages_collapse(void *addr, size_t size) {
+	assert(PAGE_ADDR2BASE(addr) == addr);
+	assert(PAGE_CEILING(size) == size);
+	/*
+	 * There is one more MADV_COLLAPSE precondition that is not easy to
+	 * express with assert statement.  In order to madvise(addr, size,
+	 * MADV_COLLAPSE) call to be successful, at least one page in the range
+	 * must currently be backed by physical memory.  In particularly, this
+	 * means we can't call pages_collapse on freshly mapped memory region.
+	 * See madvise(2) man page for more details.
+	 */
+#if defined(JEMALLOC_HAVE_MADVISE_COLLAPSE) && \
+    (defined(MADV_COLLAPSE) || defined(JEMALLOC_MADV_COLLAPSE))
+#  if defined(MADV_COLLAPSE)
+	return (madvise(addr, size, MADV_COLLAPSE) != 0);
+#  elif defined(JEMALLOC_MADV_COLLAPSE)
+	return (madvise(addr, size, JEMALLOC_MADV_COLLAPSE) != 0);
+#  endif
+#else
+	return true;
+#endif
+}
+
+bool
 pages_dontdump(void *addr, size_t size) {
 	assert(PAGE_ADDR2BASE(addr) == addr);
 	assert(PAGE_CEILING(size) == size);
@@ -593,6 +617,64 @@ pages_dodump(void *addr, size_t size) {
 #endif
 }
 
+#ifdef JEMALLOC_HAVE_PROCESS_MADVISE
+#include <sys/mman.h>
+#include <sys/syscall.h>
+static int pidfd;
+
+static bool
+init_process_madvise(void) {
+	if (opt_process_madvise_max_batch == 0) {
+		return false;
+	}
+
+	if (opt_process_madvise_max_batch > PROCESS_MADVISE_MAX_BATCH_LIMIT) {
+		opt_process_madvise_max_batch = PROCESS_MADVISE_MAX_BATCH_LIMIT;
+	}
+	pid_t pid = getpid();
+	pidfd = syscall(SYS_pidfd_open, pid, 0);
+	if (pidfd == -1) {
+		return true;
+	}
+
+	return false;
+}
+
+#ifdef SYS_process_madvise
+#define JE_SYS_PROCESS_MADVISE_NR SYS_process_madvise
+#else
+#define JE_SYS_PROCESS_MADVISE_NR EXPERIMENTAL_SYS_PROCESS_MADVISE_NR
+#endif
+
+static bool
+pages_purge_process_madvise_impl(void *vec, size_t vec_len,
+    size_t total_bytes) {
+	size_t purged_bytes = (size_t)syscall(JE_SYS_PROCESS_MADVISE_NR, pidfd,
+	    (struct iovec *)vec, vec_len, MADV_DONTNEED, 0);
+
+	return purged_bytes != total_bytes;
+}
+
+#else
+
+static bool
+init_process_madvise(void) {
+	return false;
+}
+
+static bool
+pages_purge_process_madvise_impl(void *vec, size_t vec_len,
+    size_t total_bytes) {
+	not_reached();
+	return true;
+}
+
+#endif
+
+bool
+pages_purge_process_madvise(void *vec, size_t vec_len, size_t total_bytes) {
+	return pages_purge_process_madvise_impl(vec, vec_len, total_bytes);
+}
 
 static size_t
 os_page_detect(void) {
@@ -809,6 +891,12 @@ pages_boot(void) {
 		os_pages_unmap(madv_free_page, PAGE);
 	}
 #endif
+	if (init_process_madvise()) {
+		if (opt_abort) {
+			abort();
+		}
+		return true;
+	}
 
 	return false;
 }

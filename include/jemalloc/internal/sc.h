@@ -286,6 +286,24 @@
 #  endif
 #endif
 
+/*
+ * When large size classes are disabled, there is no concept of size classes
+ * for sizes > SC_SMALLMAXCLASS (or >= SC_LARGE_MINCLASS).  This ensures that
+ * the overhead between the usable size and the user request size will not
+ * exceed PAGE.  Between SC_LARGE_MINCLASS (SC_NGROUP * PAGE) and
+ * 2 * SC_NGROUP * PAGE, the size classes also happen to be aligned with PAGE.
+ * Since tcache relies on size classes to work and it greatly increases the
+ * perf of allocs & deallocs, we extend the existence of size class to
+ * 2 * SC_NGROUP * PAGE ONLY for the tcache module.  This means for all other
+ * modules, there is no size class for sizes >= SC_LARGE_MINCLASS.  Yet for
+ * tcache, the threshold is moved up to 2 * SC_NGROUP * PAGE, which is
+ * USIZE_GROW_SLOW_THRESHOLD defined below.  With the default SC_NGROUP being
+ * 2, and PAGE being 4KB, the threshold for tcache (USIZE_GROW_SLOW_THRESHOLD)
+ * is 32KB.
+ */
+#define LG_USIZE_GROW_SLOW_THRESHOLD (SC_LG_NGROUP + LG_PAGE + 1)
+#define USIZE_GROW_SLOW_THRESHOLD (1U << LG_USIZE_GROW_SLOW_THRESHOLD)
+
 #define SC_SLAB_MAXREGS (1U << SC_LG_SLAB_MAXREGS)
 
 typedef struct sc_s sc_t;

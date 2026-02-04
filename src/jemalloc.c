@@ -123,6 +123,13 @@ zero_realloc_action_t opt_zero_realloc_action =
 
 atomic_zu_t zero_realloc_count = ATOMIC_INIT(0);
 
+/*
+ * Disable large size classes is now the default behavior in jemalloc.
+ * Although it is configurable in MALLOC_CONF, this is mainly for debugging
+ * purposes and should not be tuned.
+ */
+bool opt_disable_large_size_classes = true;
+
 const char *const zero_realloc_mode_names[] = {
 	"alloc",
 	"free",
@@ -487,8 +494,12 @@ arena_migrate(tsd_t *tsd, arena_t *oldarena, arena_t *newarena) {
 	arena_nthreads_inc(newarena, false);
 	tsd_arena_set(tsd, newarena);
 
-	if (arena_nthreads_get(oldarena, false) == 0) {
-		/* Purge if the old arena has no associated threads anymore. */
+	if (arena_nthreads_get(oldarena, false) == 0 &&
+	    !background_thread_enabled()) {
+		/*
+		 * Purge if the old arena has no associated threads anymore and
+		 * no background threads.
+		 */
 		arena_decay(tsd_tsdn(tsd), oldarena,
 		    /* is_background_thread */ false, /* all */ true);
 	}
@@ -985,44 +996,53 @@ obtain_malloc_conf(unsigned which_source, char readlink_buf[PATH_MAX + 1]) {
 		}
 		break;
 	case 2: {
+#ifndef JEMALLOC_CONFIG_FILE
+		ret = NULL;
+		break;
+#else
 		ssize_t linklen = 0;
-#ifndef _WIN32
+#  ifndef _WIN32
 		int saved_errno = errno;
 		const char *linkname =
-#  ifdef JEMALLOC_PREFIX
+#    ifdef JEMALLOC_PREFIX
 		    "/etc/"JEMALLOC_PREFIX"malloc.conf"
-#  else
+#    else
 		    "/etc/malloc.conf"
-#  endif
+#    endif
 		    ;
 
 		/*
 		 * Try to use the contents of the "/etc/malloc.conf" symbolic
 		 * link's name.
 		 */
-#ifndef JEMALLOC_READLINKAT
+#    ifndef JEMALLOC_READLINKAT
 		linklen = readlink(linkname, readlink_buf, PATH_MAX);
-#else
+#    else
 		linklen = readlinkat(AT_FDCWD, linkname, readlink_buf, PATH_MAX);
-#endif
+#    endif
 		if (linklen == -1) {
 			/* No configuration specified. */
 			linklen = 0;
 			/* Restore errno. */
 			set_errno(saved_errno);
 		}
-#endif
+#  endif
 		readlink_buf[linklen] = '\0';
 		ret = readlink_buf;
 		break;
-	} case 3: {
-		const char *envname =
-#ifdef JEMALLOC_PREFIX
-		    JEMALLOC_CPREFIX"MALLOC_CONF"
-#else
-		    "MALLOC_CONF"
 #endif
-		    ;
+	} case 3: {
+#ifndef JEMALLOC_CONFIG_ENV
+		ret = NULL;
+		break;
+#else
+		const char *envname =
+#  ifdef JEMALLOC_PREFIX
+			JEMALLOC_CPREFIX"MALLOC_CONF"
+#  else
+			"MALLOC_CONF"
+#  endif
+			;
 
 		if ((ret = jemalloc_getenv(envname)) != NULL) {
 			opt_malloc_conf_env_var = ret;
@@ -1031,6 +1051,7 @@ obtain_malloc_conf(unsigned which_source, char readlink_buf[PATH_MAX + 1]) {
 			ret = NULL;
 		}
 		break;
+#endif
 	} case 4: {
 		ret = je_malloc_conf_2_conf_harder;
 		break;
@@ -1039,44 +1060,6 @@ obtain_malloc_conf(unsigned which_source, char readlink_buf[PATH_MAX + 1]) {
 		ret = NULL;
 	}
 	return ret;
-}
-
-static bool
-validate_hpa_ratios(void) {
-	size_t hpa_threshold = fxp_mul_frac(HUGEPAGE, opt_hpa_opts.dirty_mult) +
-	    opt_hpa_opts.hugification_threshold;
-	if (hpa_threshold > HUGEPAGE) {
-		return false;
-	}
-
-	char hpa_dirty_mult[FXP_BUF_SIZE];
-	char hugification_threshold[FXP_BUF_SIZE];
-	char normalization_message[256] = {0};
-	fxp_print(opt_hpa_opts.dirty_mult, hpa_dirty_mult);
-	fxp_print(fxp_div(FXP_INIT_INT((unsigned)
-	    (opt_hpa_opts.hugification_threshold >> LG_PAGE)),
-	    FXP_INIT_INT(HUGEPAGE_PAGES)), hugification_threshold);
-	if (!opt_abort_conf) {
-		char normalized_hugification_threshold[FXP_BUF_SIZE];
-		opt_hpa_opts.hugification_threshold +=
-		    HUGEPAGE - hpa_threshold;
-		fxp_print(fxp_div(FXP_INIT_INT((unsigned)
-		    (opt_hpa_opts.hugification_threshold >> LG_PAGE)),
-		    FXP_INIT_INT(HUGEPAGE_PAGES)),
-		    normalized_hugification_threshold);
-		malloc_snprintf(normalization_message,
-		    sizeof(normalization_message), "<jemalloc>: Normalizing "
-		    "HPA settings to avoid pathological behavior, setting "
-		    "hpa_hugification_threshold_ratio: to %s.\n",
-		    normalized_hugification_threshold);
-	}
-	malloc_printf(
-	    "<jemalloc>: Invalid combination of options "
-	    "hpa_hugification_threshold_ratio: %s and hpa_dirty_mult: %s. "
-	    "These values should sum to > 1.0.\n%s", hugification_threshold,
-	    hpa_dirty_mult, normalization_message);
-
-	return true;
 }
 
 static void
@@ -1090,9 +1073,15 @@ validate_hpa_settings(void) {
 		    "<jemalloc>: huge page size (%zu) greater than expected."
 		    "May not be supported or behave as expected.", HUGEPAGE);
 	}
-	if (opt_hpa_opts.dirty_mult != (fxp_t)-1 && validate_hpa_ratios()) {
-		had_conf_error = true;
+#ifndef JEMALLOC_HAVE_MADVISE_COLLAPSE
+	if (opt_hpa_opts.hugify_sync) {
+	       had_conf_error = true;
+	       malloc_printf(
+		   "<jemalloc>: hpa_hugify_sync config option is enabled, "
+		   "but MADV_COLLAPSE support was not detected at build "
+		   "time.");
 	}
+#endif
 }
 
 static void
@@ -1255,6 +1244,7 @@ malloc_conf_init_helper(sc_data_t *sc_data, unsigned bin_shard_sizes[SC_NBINS],
 			CONF_HANDLE_BOOL(opt_abort_conf, "abort_conf")
 			CONF_HANDLE_BOOL(opt_cache_oblivious, "cache_oblivious")
 			CONF_HANDLE_BOOL(opt_trust_madvise, "trust_madvise")
+			CONF_HANDLE_BOOL(opt_huge_arena_pac_thp, "huge_arena_pac_thp")
 			if (strncmp("metadata_thp", k, klen) == 0) {
 				int m;
 				bool match = false;
@@ -1376,6 +1366,11 @@ malloc_conf_init_helper(sc_data_t *sc_data, unsigned bin_shard_sizes[SC_NBINS],
 			    "muzzy_decay_ms", -1, NSTIME_SEC_MAX * KQU(1000) <
 			    QU(SSIZE_MAX) ? NSTIME_SEC_MAX * KQU(1000) :
 			    SSIZE_MAX);
+			CONF_HANDLE_SIZE_T(opt_process_madvise_max_batch,
+			    "process_madvise_max_batch", 0,
+			    PROCESS_MADVISE_MAX_BATCH_LIMIT,
+			    CONF_DONT_CHECK_MIN, CONF_CHECK_MAX,
+			    /* clip */ true)
 			CONF_HANDLE_BOOL(opt_stats_print, "stats_print")
 			if (CONF_MATCH("stats_print_opts")) {
 				init_opt_stats_opts(v, vlen,
@@ -1566,14 +1561,13 @@ malloc_conf_init_helper(sc_data_t *sc_data, unsigned bin_shard_sizes[SC_NBINS],
 			    0, 0, CONF_DONT_CHECK_MIN, CONF_DONT_CHECK_MAX,
 			    false);
 
+			CONF_HANDLE_BOOL(
+			    opt_hpa_opts.hugify_sync, "hpa_hugify_sync");
+
 			CONF_HANDLE_UINT64_T(
 			    opt_hpa_opts.min_purge_interval_ms,
 			    "hpa_min_purge_interval_ms", 0, 0,
 			    CONF_DONT_CHECK_MIN, CONF_DONT_CHECK_MAX, false);
-
-			CONF_HANDLE_BOOL(
-			    opt_hpa_opts.experimental_strict_min_purge_interval,
-			    "experimental_hpa_strict_min_purge_interval");
 
 			CONF_HANDLE_SSIZE_T(
 			    opt_hpa_opts.experimental_max_purge_nhp,
@@ -1601,8 +1595,8 @@ malloc_conf_init_helper(sc_data_t *sc_data, unsigned bin_shard_sizes[SC_NBINS],
 			    "hpa_sec_nshards", 0, 0, CONF_CHECK_MIN,
 			    CONF_DONT_CHECK_MAX, true);
 			CONF_HANDLE_SIZE_T(opt_hpa_sec_opts.max_alloc,
-			    "hpa_sec_max_alloc", PAGE, 0, CONF_CHECK_MIN,
-			    CONF_DONT_CHECK_MAX, true);
+			    "hpa_sec_max_alloc", PAGE, USIZE_GROW_SLOW_THRESHOLD,
+			    CONF_CHECK_MIN, CONF_CHECK_MAX, true);
 			CONF_HANDLE_SIZE_T(opt_hpa_sec_opts.max_bytes,
 			    "hpa_sec_max_bytes", PAGE, 0, CONF_CHECK_MIN,
 			    CONF_DONT_CHECK_MAX, true);
@@ -1650,6 +1644,10 @@ malloc_conf_init_helper(sc_data_t *sc_data, unsigned bin_shard_sizes[SC_NBINS],
 				    "prof_thread_active_init")
 				CONF_HANDLE_SIZE_T(opt_lg_prof_sample,
 				    "lg_prof_sample", 0, (sizeof(uint64_t) << 3)
+				    - 1, CONF_DONT_CHECK_MIN, CONF_CHECK_MAX,
+				    true)
+				CONF_HANDLE_SIZE_T(opt_experimental_lg_prof_threshold,
+				    "experimental_lg_prof_threshold", 0, (sizeof(uint64_t) << 3)
 				    - 1, CONF_DONT_CHECK_MIN, CONF_CHECK_MAX,
 				    true)
 				CONF_HANDLE_BOOL(opt_prof_accum, "prof_accum")
@@ -1781,6 +1779,15 @@ malloc_conf_init_helper(sc_data_t *sc_data, unsigned bin_shard_sizes[SC_NBINS],
 			CONF_HANDLE_SIZE_T(opt_san_guard_large,
 			    "san_guard_large", 0, SIZE_T_MAX,
 			    CONF_DONT_CHECK_MIN, CONF_DONT_CHECK_MAX, false)
+
+			/*
+			 * Disable large size classes is now the default
+			 * behavior in jemalloc.  Although it is configurable
+			 * in MALLOC_CONF, this is mainly for debugging
+			 * purposes and should not be tuned.
+			 */
+			CONF_HANDLE_BOOL(opt_disable_large_size_classes,
+			    "disable_large_size_classes");
 
 			CONF_ERROR("Invalid conf pair", k, klen, v, vlen);
 #undef CONF_ERROR
@@ -1983,13 +1990,6 @@ malloc_init_hard_a0_locked(void) {
 		} else {
 			opt_hpa = false;
 		}
-	} else if (opt_hpa) {
-		hpa_shard_opts_t hpa_shard_opts = opt_hpa_opts;
-		hpa_shard_opts.deferral_allowed = background_thread_enabled();
-		if (pa_shard_enable_hpa(TSDN_NULL, &a0->pa_shard,
-		    &hpa_shard_opts, &opt_hpa_sec_opts)) {
-			return true;
-		}
 	}
 
 	malloc_init_state = malloc_init_a0_initialized;
@@ -2100,7 +2100,7 @@ percpu_arena_as_initialized(percpu_arena_mode_t mode) {
 }
 
 static bool
-malloc_init_narenas(void) {
+malloc_init_narenas(tsdn_t *tsdn) {
 	assert(ncpus > 0);
 
 	if (opt_percpu_arena != percpu_arena_disabled) {
@@ -2167,7 +2167,7 @@ malloc_init_narenas(void) {
 		    narenas_auto);
 	}
 	narenas_total_set(narenas_auto);
-	if (arena_init_huge(a0)) {
+	if (arena_init_huge(tsdn, a0)) {
 		narenas_total_inc();
 	}
 	manual_arena_base = narenas_total_get();
@@ -2208,6 +2208,16 @@ static bool
 malloc_init_hard(void) {
 	tsd_t *tsd;
 
+	assert(TCACHE_MAXCLASS_LIMIT <= USIZE_GROW_SLOW_THRESHOLD);
+	assert(SC_LOOKUP_MAXCLASS <= USIZE_GROW_SLOW_THRESHOLD);
+	/*
+	 * This asserts an extreme case where TINY_MAXCLASS is larger
+	 * than LARGE_MINCLASS.  It could only happen if some constants
+	 * are configured miserably wrong.
+	 */
+	assert(SC_LG_TINY_MAXCLASS <=
+	    (size_t)1ULL << (LG_PAGE + SC_LG_NGROUP));
+
 #if defined(_WIN32) && _WIN32_WINNT < 0x0600
 	_init_init_lock();
 #endif
@@ -2240,9 +2250,23 @@ malloc_init_hard(void) {
 	/* Set reentrancy level to 1 during init. */
 	pre_reentrancy(tsd, NULL);
 	/* Initialize narenas before prof_boot2 (for allocation). */
-	if (malloc_init_narenas()
+	if (malloc_init_narenas(tsd_tsdn(tsd))
 	    || background_thread_boot1(tsd_tsdn(tsd), b0get())) {
 		UNLOCK_RETURN(tsd_tsdn(tsd), true, true)
+	}
+	if (opt_hpa) {
+		/*
+		 * We didn't initialize arena 0 hpa_shard in arena_new, because
+		 * background_thread_enabled wasn't initialized yet, but we
+		 * need it to set correct value for deferral_allowed.
+		 */
+		arena_t *a0 = arena_get(tsd_tsdn(tsd), 0, false);
+		hpa_shard_opts_t hpa_shard_opts = opt_hpa_opts;
+		hpa_shard_opts.deferral_allowed = background_thread_enabled();
+		if (pa_shard_enable_hpa(tsd_tsdn(tsd), &a0->pa_shard,
+		    &hpa_shard_opts, &opt_hpa_sec_opts)) {
+			UNLOCK_RETURN(tsd_tsdn(tsd), true, true)
+		}
 	}
 	if (config_prof && prof_boot2(tsd, b0get())) {
 		UNLOCK_RETURN(tsd_tsdn(tsd), true, true)
@@ -2388,7 +2412,8 @@ aligned_usize_get(size_t size, size_t alignment, size_t *usize, szind_t *ind,
 			if (unlikely(*ind >= SC_NSIZES)) {
 				return true;
 			}
-			*usize = sz_index2size(*ind);
+			*usize = sz_large_size_classes_disabled()? sz_s2u(size):
+			    sz_index2size(*ind);
 			assert(*usize > 0 && *usize <= SC_LARGE_MAXCLASS);
 			return false;
 		}
@@ -2936,7 +2961,7 @@ ifree(tsd_t *tsd, void *ptr, tcache_t *tcache, bool slow_path) {
 	    &alloc_ctx);
 	assert(alloc_ctx.szind != SC_NSIZES);
 
-	size_t usize = sz_index2size(alloc_ctx.szind);
+	size_t usize = emap_alloc_ctx_usize_get(&alloc_ctx);
 	if (config_prof && opt_prof) {
 		prof_free(tsd, ptr, usize, &alloc_ctx);
 	}
@@ -2968,35 +2993,41 @@ isfree(tsd_t *tsd, void *ptr, size_t usize, tcache_t *tcache, bool slow_path) {
 	assert(malloc_initialized() || IS_INITIALIZER);
 
 	emap_alloc_ctx_t alloc_ctx;
+	szind_t szind = sz_size2index(usize);
 	if (!config_prof) {
-		alloc_ctx.szind = sz_size2index(usize);
-		alloc_ctx.slab = (alloc_ctx.szind < SC_NBINS);
+		emap_alloc_ctx_init(&alloc_ctx, szind, (szind < SC_NBINS),
+		    usize);
 	} else {
 		if (likely(!prof_sample_aligned(ptr))) {
 			/*
 			 * When the ptr is not page aligned, it was not sampled.
 			 * usize can be trusted to determine szind and slab.
 			 */
-			alloc_ctx.szind = sz_size2index(usize);
-			alloc_ctx.slab = (alloc_ctx.szind < SC_NBINS);
+			emap_alloc_ctx_init(&alloc_ctx, szind,
+			    (szind < SC_NBINS), usize);
 		} else if (opt_prof) {
+			/*
+			 * Small sampled allocs promoted can still get correct
+			 * usize here.  Check comments in edata_usize_get.
+			 */
 			emap_alloc_ctx_lookup(tsd_tsdn(tsd), &arena_emap_global,
 			    ptr, &alloc_ctx);
 
 			if (config_opt_safety_checks) {
 				/* Small alloc may have !slab (sampled). */
+				size_t true_size =
+				    emap_alloc_ctx_usize_get(&alloc_ctx);
 				if (unlikely(alloc_ctx.szind !=
 				    sz_size2index(usize))) {
 					safety_check_fail_sized_dealloc(
 					    /* current_dealloc */ true, ptr,
-					    /* true_size */ sz_index2size(
-					    alloc_ctx.szind),
+					    /* true_size */ true_size,
 					    /* input_size */ usize);
 				}
 			}
 		} else {
-			alloc_ctx.szind = sz_size2index(usize);
-			alloc_ctx.slab = (alloc_ctx.szind < SC_NBINS);
+			emap_alloc_ctx_init(&alloc_ctx, szind,
+			    (szind < SC_NBINS), usize);
 		}
 	}
 	bool fail = maybe_check_alloc_ctx(tsd, ptr, &alloc_ctx);
@@ -3498,7 +3529,7 @@ do_rallocx(void *ptr, size_t size, int flags, bool is_realloc) {
 	emap_alloc_ctx_lookup(tsd_tsdn(tsd), &arena_emap_global, ptr,
 	    &alloc_ctx);
 	assert(alloc_ctx.szind != SC_NSIZES);
-	old_usize = sz_index2size(alloc_ctx.szind);
+	old_usize = emap_alloc_ctx_usize_get(&alloc_ctx);
 	assert(old_usize == isalloc(tsd_tsdn(tsd), ptr));
 	if (aligned_usize_get(size, alignment, &usize, NULL, false)) {
 		goto label_oom;
@@ -3720,7 +3751,15 @@ ixallocx_prof(tsd_t *tsd, void *ptr, size_t old_usize, size_t size,
 		prof_info_get(tsd, ptr, alloc_ctx, &prof_info);
 		prof_alloc_rollback(tsd, tctx);
 	} else {
-		prof_info_get_and_reset_recent(tsd, ptr, alloc_ctx, &prof_info);
+		/*
+		 * Need to retrieve the new alloc_ctx since the modification
+		 * to edata has already been done.
+		 */
+		emap_alloc_ctx_t new_alloc_ctx;
+		emap_alloc_ctx_lookup(tsd_tsdn(tsd), &arena_emap_global, ptr,
+		    &new_alloc_ctx);
+		prof_info_get_and_reset_recent(tsd, ptr, &new_alloc_ctx,
+		    &prof_info);
 		assert(usize <= usize_max);
 		sample_event = te_prof_sample_event_lookahead(tsd, usize);
 		prof_realloc(tsd, ptr, size, usize, tctx, prof_active, ptr,
@@ -3760,7 +3799,7 @@ je_xallocx(void *ptr, size_t size, size_t extra, int flags) {
 	emap_alloc_ctx_lookup(tsd_tsdn(tsd), &arena_emap_global, ptr,
 	    &alloc_ctx);
 	assert(alloc_ctx.szind != SC_NSIZES);
-	old_usize = sz_index2size(alloc_ctx.szind);
+	old_usize = emap_alloc_ctx_usize_get(&alloc_ctx);
 	assert(old_usize == isalloc(tsd_tsdn(tsd), ptr));
 	/*
 	 * The API explicitly absolves itself of protecting against (size +

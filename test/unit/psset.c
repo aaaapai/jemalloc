@@ -19,7 +19,9 @@ static void
 test_psset_fake_purge(hpdata_t *ps) {
 	hpdata_purge_state_t purge_state;
 	hpdata_alloc_allowed_set(ps, false);
-	hpdata_purge_begin(ps, &purge_state);
+	size_t nranges;
+	hpdata_purge_begin(ps, &purge_state, &nranges);
+	(void) nranges;
 	void *addr;
 	size_t size;
 	while (hpdata_purge_next(ps, &purge_state, &addr, &size)) {
@@ -65,6 +67,24 @@ test_psset_alloc_reuse(psset_t *psset, edata_t *r_edata, size_t size) {
 }
 
 static hpdata_t *
+test_psset_hugify(psset_t *psset, edata_t *edata) {
+	hpdata_t *ps = edata_ps_get(edata);
+	psset_update_begin(psset, ps);
+	hpdata_hugify(ps);
+	psset_update_end(psset, ps);
+	return ps;
+}
+
+static hpdata_t *
+test_psset_dehugify(psset_t *psset, edata_t *edata) {
+	hpdata_t *ps = edata_ps_get(edata);
+	psset_update_begin(psset, ps);
+	hpdata_dehugify(ps);
+	psset_update_end(psset, ps);
+	return ps;
+}
+
+static hpdata_t *
 test_psset_dalloc(psset_t *psset, edata_t *edata) {
 	hpdata_t *ps = edata_ps_get(edata);
 	psset_update_begin(psset, ps);
@@ -102,6 +122,7 @@ edata_expect(edata_t *edata, size_t page_offset, size_t page_cnt) {
 }
 
 TEST_BEGIN(test_empty) {
+	test_skip_if(hpa_hugepage_size_exceeds_limit());
 	bool err;
 	hpdata_t pageslab;
 	hpdata_init(&pageslab, PAGESLAB_ADDR, PAGESLAB_AGE);
@@ -119,6 +140,7 @@ TEST_BEGIN(test_empty) {
 TEST_END
 
 TEST_BEGIN(test_fill) {
+	test_skip_if(hpa_hugepage_size_exceeds_limit());
 	bool err;
 
 	hpdata_t pageslab;
@@ -151,6 +173,7 @@ TEST_BEGIN(test_fill) {
 TEST_END
 
 TEST_BEGIN(test_reuse) {
+	test_skip_if(hpa_hugepage_size_exceeds_limit());
 	bool err;
 	hpdata_t *ps;
 
@@ -243,6 +266,7 @@ TEST_BEGIN(test_reuse) {
 TEST_END
 
 TEST_BEGIN(test_evict) {
+	test_skip_if(hpa_hugepage_size_exceeds_limit());
 	bool err;
 	hpdata_t *ps;
 
@@ -277,6 +301,7 @@ TEST_BEGIN(test_evict) {
 TEST_END
 
 TEST_BEGIN(test_multi_pageslab) {
+	test_skip_if(hpa_hugepage_size_exceeds_limit());
 	bool err;
 	hpdata_t *ps;
 
@@ -339,6 +364,150 @@ TEST_BEGIN(test_multi_pageslab) {
 }
 TEST_END
 
+TEST_BEGIN(test_stats_merged) {
+	hpdata_t pageslab;
+	hpdata_init(&pageslab, PAGESLAB_ADDR, PAGESLAB_AGE);
+
+	edata_t alloc[HUGEPAGE_PAGES];
+
+	psset_t psset;
+	psset_init(&psset);
+	expect_zu_eq(0, psset.stats.merged.npageslabs, "");
+	expect_zu_eq(0, psset.stats.merged.nactive, "");
+	expect_zu_eq(0, psset.stats.merged.ndirty, "");
+
+	edata_init_test(&alloc[0]);
+	test_psset_alloc_new(&psset, &pageslab, &alloc[0], PAGE);
+	for (size_t i = 1; i < HUGEPAGE_PAGES; i++) {
+		expect_zu_eq(1, psset.stats.merged.npageslabs, "");
+		expect_zu_eq(i, psset.stats.merged.nactive, "");
+		expect_zu_eq(0, psset.stats.merged.ndirty, "");
+
+		edata_init_test(&alloc[i]);
+		bool err = test_psset_alloc_reuse(&psset, &alloc[i], PAGE);
+		expect_false(err, "Nonempty psset failed page allocation.");
+	}
+	expect_zu_eq(1, psset.stats.merged.npageslabs, "");
+	expect_zu_eq(HUGEPAGE_PAGES, psset.stats.merged.nactive, "");
+	expect_zu_eq(0, psset.stats.merged.ndirty, "");
+
+	for (ssize_t i = HUGEPAGE_PAGES - 1; i > 0; i--) {
+		test_psset_dalloc(&psset, &alloc[i]);
+		expect_zu_eq(1, psset.stats.merged.npageslabs, "");
+		expect_zu_eq(i, psset.stats.merged.nactive, "");
+		expect_zu_eq(HUGEPAGE_PAGES - i, psset.stats.merged.ndirty, "");
+	}
+	/* No allocations have left. */
+	test_psset_dalloc(&psset, &alloc[0]);
+	expect_zu_eq(0, psset.stats.merged.npageslabs, "");
+	expect_zu_eq(0, psset.stats.merged.nactive, "");
+
+	/*
+	 * Last test_psset_dalloc call removed empty pageslab from psset, so
+	 * nothing has left there, even no dirty pages.
+	 */
+	expect_zu_eq(0, psset.stats.merged.ndirty, "");
+
+	test_psset_alloc_new(&psset, &pageslab, &alloc[0], PAGE);
+	expect_zu_eq(1, psset.stats.merged.npageslabs, "");
+	expect_zu_eq(1, psset.stats.merged.nactive, "");
+	expect_zu_eq(0, psset.stats.merged.ndirty, "");
+
+	psset_update_begin(&psset, &pageslab);
+	expect_zu_eq(0, psset.stats.merged.npageslabs, "");
+	expect_zu_eq(0, psset.stats.merged.nactive, "");
+	expect_zu_eq(0, psset.stats.merged.ndirty, "");
+
+	psset_update_end(&psset, &pageslab);
+	expect_zu_eq(1, psset.stats.merged.npageslabs, "");
+	expect_zu_eq(1, psset.stats.merged.nactive, "");
+	expect_zu_eq(0, psset.stats.merged.ndirty, "");
+}
+TEST_END
+
+TEST_BEGIN(test_stats_huge) {
+	test_skip_if(!config_stats);
+	test_skip_if(hpa_hugepage_size_exceeds_limit());
+
+	hpdata_t pageslab;
+	hpdata_init(&pageslab, PAGESLAB_ADDR, PAGESLAB_AGE);
+
+	edata_t alloc[HUGEPAGE_PAGES];
+
+	psset_t psset;
+	psset_init(&psset);
+	for (int huge = 0; huge < PSSET_NHUGE; ++huge) {
+		expect_zu_eq(0, psset.stats.slabs[huge].npageslabs, "");
+		expect_zu_eq(0, psset.stats.slabs[huge].nactive, "");
+		expect_zu_eq(0, psset.stats.slabs[huge].ndirty, "");
+	}
+
+	edata_init_test(&alloc[0]);
+	test_psset_alloc_new(&psset, &pageslab, &alloc[0], PAGE);
+	for (size_t i = 1; i < HUGEPAGE_PAGES; i++) {
+		expect_zu_eq(1, psset.stats.slabs[0].npageslabs, "");
+		expect_zu_eq(i, psset.stats.slabs[0].nactive, "");
+		expect_zu_eq(0, psset.stats.slabs[0].ndirty, "");
+
+		expect_zu_eq(0, psset.stats.slabs[1].npageslabs, "");
+		expect_zu_eq(0, psset.stats.slabs[1].nactive, "");
+		expect_zu_eq(0, psset.stats.slabs[1].ndirty, "");
+
+		edata_init_test(&alloc[i]);
+		bool err = test_psset_alloc_reuse(&psset, &alloc[i], PAGE);
+		expect_false(err, "Nonempty psset failed page allocation.");
+	}
+	expect_zu_eq(1, psset.stats.slabs[0].npageslabs, "");
+	expect_zu_eq(HUGEPAGE_PAGES, psset.stats.slabs[0].nactive, "");
+	expect_zu_eq(0, psset.stats.slabs[0].ndirty, "");
+
+	expect_zu_eq(0, psset.stats.slabs[1].npageslabs, "");
+	expect_zu_eq(0, psset.stats.slabs[1].nactive, "");
+	expect_zu_eq(0, psset.stats.slabs[1].ndirty, "");
+
+	test_psset_hugify(&psset, &alloc[0]);
+
+	/* All stats should been moved from nonhuge to huge. */
+	expect_zu_eq(0, psset.stats.slabs[0].npageslabs, "");
+	expect_zu_eq(0, psset.stats.slabs[0].nactive, "");
+	expect_zu_eq(0, psset.stats.slabs[0].ndirty, "");
+
+	expect_zu_eq(1, psset.stats.slabs[1].npageslabs, "");
+	expect_zu_eq(HUGEPAGE_PAGES, psset.stats.slabs[1].nactive, "");
+	expect_zu_eq(0, psset.stats.slabs[1].ndirty, "");
+
+	test_psset_dehugify(&psset, &alloc[0]);
+
+	/* And back from huge to nonhuge after dehugification. */
+	expect_zu_eq(1, psset.stats.slabs[0].npageslabs, "");
+	expect_zu_eq(HUGEPAGE_PAGES, psset.stats.slabs[0].nactive, "");
+	expect_zu_eq(0, psset.stats.slabs[0].ndirty, "");
+
+	expect_zu_eq(0, psset.stats.slabs[1].npageslabs, "");
+	expect_zu_eq(0, psset.stats.slabs[1].nactive, "");
+	expect_zu_eq(0, psset.stats.slabs[1].ndirty, "");
+
+	for (ssize_t i = HUGEPAGE_PAGES - 1; i > 0; i--) {
+		test_psset_dalloc(&psset, &alloc[i]);
+
+		expect_zu_eq(1, psset.stats.slabs[0].npageslabs, "");
+		expect_zu_eq(i, psset.stats.slabs[0].nactive, "");
+		expect_zu_eq(HUGEPAGE_PAGES - i, psset.stats.slabs[0].ndirty, "");
+
+		expect_zu_eq(0, psset.stats.slabs[1].npageslabs, "");
+		expect_zu_eq(0, psset.stats.slabs[1].nactive, "");
+		expect_zu_eq(0, psset.stats.slabs[1].ndirty, "");
+	}
+	test_psset_dalloc(&psset, &alloc[0]);
+
+	for (int huge = 0; huge < PSSET_NHUGE; huge++) {
+		expect_zu_eq(0, psset.stats.slabs[huge].npageslabs, "");
+		expect_zu_eq(0, psset.stats.slabs[huge].nactive, "");
+		expect_zu_eq(0, psset.stats.slabs[huge].ndirty, "");
+	}
+}
+TEST_END
+
 static void
 stats_expect_empty(psset_bin_stats_t *stats) {
 	assert_zu_eq(0, stats->npageslabs,
@@ -379,7 +548,10 @@ stats_expect(psset_t *psset, size_t nactive) {
 	expect_zu_eq(nactive, psset_nactive(psset), "");
 }
 
-TEST_BEGIN(test_stats) {
+TEST_BEGIN(test_stats_fullness) {
+	test_skip_if(!config_stats);
+	test_skip_if(hpa_hugepage_size_exceeds_limit());
+
 	bool err;
 
 	hpdata_t pageslab;
@@ -474,6 +646,7 @@ init_test_pageslabs(psset_t *psset, hpdata_t *pageslab,
 }
 
 TEST_BEGIN(test_oldest_fit) {
+	test_skip_if(hpa_hugepage_size_exceeds_limit());
 	bool err;
 	edata_t alloc[HUGEPAGE_PAGES];
 	edata_t worse_alloc[HUGEPAGE_PAGES];
@@ -497,6 +670,7 @@ TEST_BEGIN(test_oldest_fit) {
 TEST_END
 
 TEST_BEGIN(test_insert_remove) {
+	test_skip_if(hpa_hugepage_size_exceeds_limit());
 	bool err;
 	hpdata_t *ps;
 	edata_t alloc[HUGEPAGE_PAGES];
@@ -543,6 +717,7 @@ TEST_BEGIN(test_insert_remove) {
 TEST_END
 
 TEST_BEGIN(test_purge_prefers_nonhuge) {
+	test_skip_if(hpa_hugepage_size_exceeds_limit());
 	/*
 	 * All else being equal, we should prefer purging non-huge pages over
 	 * huge ones for non-empty extents.
@@ -626,6 +801,7 @@ TEST_BEGIN(test_purge_prefers_nonhuge) {
 TEST_END
 
 TEST_BEGIN(test_purge_prefers_empty) {
+	test_skip_if(hpa_hugepage_size_exceeds_limit());
 	void *ptr;
 
 	psset_t psset;
@@ -662,6 +838,7 @@ TEST_BEGIN(test_purge_prefers_empty) {
 TEST_END
 
 TEST_BEGIN(test_purge_prefers_empty_huge) {
+	test_skip_if(hpa_hugepage_size_exceeds_limit());
 	void *ptr;
 
 	psset_t psset;
@@ -739,7 +916,9 @@ main(void) {
 	    test_reuse,
 	    test_evict,
 	    test_multi_pageslab,
-	    test_stats,
+	    test_stats_merged,
+	    test_stats_huge,
+	    test_stats_fullness,
 	    test_oldest_fit,
 	    test_insert_remove,
 	    test_purge_prefers_nonhuge,

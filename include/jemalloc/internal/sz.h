@@ -54,6 +54,11 @@ extern size_t sz_large_pad;
 
 extern void sz_boot(const sc_data_t *sc_data, bool cache_oblivious);
 
+JEMALLOC_ALWAYS_INLINE bool
+sz_large_size_classes_disabled(void) {
+	return opt_disable_large_size_classes;
+}
+
 JEMALLOC_ALWAYS_INLINE pszind_t
 sz_psz2ind(size_t psz) {
 	assert(psz > 0);
@@ -257,9 +262,32 @@ sz_index2size_lookup(szind_t index) {
 }
 
 JEMALLOC_ALWAYS_INLINE size_t
-sz_index2size(szind_t index) {
+sz_index2size_unsafe(szind_t index) {
 	assert(index < SC_NSIZES);
 	return sz_index2size_lookup(index);
+}
+
+JEMALLOC_ALWAYS_INLINE size_t
+sz_index2size(szind_t index) {
+	assert(!sz_large_size_classes_disabled() ||
+	    index <= sz_size2index(USIZE_GROW_SLOW_THRESHOLD));
+	size_t size = sz_index2size_unsafe(index);
+	/*
+	 * With large size classes disabled, the usize above
+	 * SC_LARGE_MINCLASS should grow by PAGE.  However, for sizes
+	 * in [SC_LARGE_MINCLASS, USIZE_GROW_SLOW_THRESHOLD], the
+	 * usize would not change because the size class gap in this
+	 * range is just the same as PAGE.  Although we use
+	 * SC_LARGE_MINCLASS as the threshold in most places, we
+	 * allow tcache and sec to cache up to
+	 * USIZE_GROW_SLOW_THRESHOLD to minimize the side effect of
+	 * not having size classes for larger sizes.  Thus, we assert
+	 * the size is no larger than USIZE_GROW_SLOW_THRESHOLD here
+	 * instead of SC_LARGE_MINCLASS.
+	 */
+	assert(!sz_large_size_classes_disabled() ||
+	    size <= USIZE_GROW_SLOW_THRESHOLD);
+	return size;
 }
 
 JEMALLOC_ALWAYS_INLINE void
@@ -280,6 +308,17 @@ sz_size2index_usize_fastpath(size_t size, szind_t *ind, size_t *usize) {
 }
 
 JEMALLOC_ALWAYS_INLINE size_t
+sz_s2u_compute_using_delta(size_t size) {
+	size_t x = lg_floor((size<<1)-1);
+	size_t lg_delta = (x < SC_LG_NGROUP + LG_QUANTUM + 1)
+	    ?  LG_QUANTUM : x - SC_LG_NGROUP - 1;
+	size_t delta = ZU(1) << lg_delta;
+	size_t delta_mask = delta - 1;
+	size_t usize = (size + delta_mask) & ~delta_mask;
+	return usize;
+}
+
+JEMALLOC_ALWAYS_INLINE size_t
 sz_s2u_compute(size_t size) {
 	if (unlikely(size > SC_LARGE_MAXCLASS)) {
 		return 0;
@@ -296,19 +335,24 @@ sz_s2u_compute(size_t size) {
 		    (ZU(1) << lg_ceil));
 	}
 #endif
-	{
-		size_t x = lg_floor((size<<1)-1);
-		size_t lg_delta = (x < SC_LG_NGROUP + LG_QUANTUM + 1)
-		    ?  LG_QUANTUM : x - SC_LG_NGROUP - 1;
-		size_t delta = ZU(1) << lg_delta;
-		size_t delta_mask = delta - 1;
-		size_t usize = (size + delta_mask) & ~delta_mask;
+	if (size <= SC_SMALL_MAXCLASS || !sz_large_size_classes_disabled()) {
+		return sz_s2u_compute_using_delta(size);
+	} else {
+		/*
+		 * With sz_large_size_classes_disabled() == true, usize of a large
+		 * allocation is calculated by ceiling size to the smallest
+		 * multiple of PAGE to minimize the memory overhead, especially
+		 * when using hugepages.
+		 */
+		size_t usize = PAGE_CEILING(size);
+		assert(usize - size < PAGE);
 		return usize;
 	}
 }
 
 JEMALLOC_ALWAYS_INLINE size_t
 sz_s2u_lookup(size_t size) {
+	assert(size < SC_LARGE_MINCLASS);
 	size_t ret = sz_index2size_lookup(sz_size2index_lookup(size));
 
 	assert(ret == sz_s2u_compute(size));

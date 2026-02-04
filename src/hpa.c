@@ -2,6 +2,7 @@
 #include "jemalloc/internal/jemalloc_internal_includes.h"
 
 #include "jemalloc/internal/hpa.h"
+#include "jemalloc/internal/hpa_utils.h"
 
 #include "jemalloc/internal/fb.h"
 #include "jemalloc/internal/witness.h"
@@ -23,6 +24,11 @@ static void hpa_dalloc(tsdn_t *tsdn, pai_t *self, edata_t *edata,
 static void hpa_dalloc_batch(tsdn_t *tsdn, pai_t *self,
     edata_list_active_t *list, bool *deferred_work_generated);
 static uint64_t hpa_time_until_deferred_work(tsdn_t *tsdn, pai_t *self);
+
+bool
+hpa_hugepage_size_exceeds_limit(void) {
+	return HUGEPAGE > HUGEPAGE_MAX_EXPECTED_SIZE;
+}
 
 bool
 hpa_supported(void) {
@@ -51,6 +57,10 @@ hpa_supported(void) {
 	if (HUGEPAGE_PAGES == 1) {
 		return false;
 	}
+	/* As mentioned in pages.h, do not support If HUGEPAGE is too large. */
+	if (hpa_hugepage_size_exceeds_limit()) {
+		return false;
+	}
 	return true;
 }
 
@@ -73,7 +83,6 @@ hpa_central_init(hpa_central_t *central, base_t *base, const hpa_hooks_t *hooks)
 	central->base = base;
 	central->eden = NULL;
 	central->eden_len = 0;
-	central->age_counter = 0;
 	central->hooks = *hooks;
 	return false;
 }
@@ -86,7 +95,7 @@ hpa_alloc_ps(tsdn_t *tsdn, hpa_central_t *central) {
 
 static hpdata_t *
 hpa_central_extract(tsdn_t *tsdn, hpa_central_t *central, size_t size,
-    bool *oom) {
+    uint64_t age, bool *oom) {
 	/* Don't yet support big allocations; these should get filtered out. */
 	assert(size <= HUGEPAGE);
 	/*
@@ -109,7 +118,7 @@ hpa_central_extract(tsdn_t *tsdn, hpa_central_t *central, size_t size,
 			malloc_mutex_unlock(tsdn, &central->grow_mtx);
 			return NULL;
 		}
-		hpdata_init(ps, central->eden, central->age_counter++);
+		hpdata_init(ps, central->eden, age);
 		central->eden = NULL;
 		central->eden_len = 0;
 		malloc_mutex_unlock(tsdn, &central->grow_mtx);
@@ -159,7 +168,7 @@ hpa_central_extract(tsdn_t *tsdn, hpa_central_t *central, size_t size,
 	assert(central->eden_len % HUGEPAGE == 0);
 	assert(HUGEPAGE_ADDR2BASE(central->eden) == central->eden);
 
-	hpdata_init(ps, central->eden, central->age_counter++);
+	hpdata_init(ps, central->eden, age);
 
 	char *eden_char = (char *)central->eden;
 	eden_char += HUGEPAGE;
@@ -206,6 +215,7 @@ hpa_shard_init(hpa_shard_t *shard, hpa_central_t *central, emap_t *emap,
 	shard->stats.npurge_passes = 0;
 	shard->stats.npurges = 0;
 	shard->stats.nhugifies = 0;
+	shard->stats.nhugify_failures = 0;
 	shard->stats.ndehugifies = 0;
 
 	/*
@@ -238,6 +248,7 @@ hpa_shard_nonderived_stats_accum(hpa_shard_nonderived_stats_t *dst,
 	dst->npurge_passes += src->npurge_passes;
 	dst->npurges += src->npurges;
 	dst->nhugifies += src->nhugifies;
+	dst->nhugify_failures += src->nhugify_failures;
 	dst->ndehugifies += src->ndehugifies;
 }
 
@@ -373,14 +384,81 @@ hpa_shard_has_deferred_work(tsdn_t *tsdn, hpa_shard_t *shard) {
 	return to_hugify != NULL || hpa_should_purge(tsdn, shard);
 }
 
-/* Returns whether or not we purged anything. */
-static bool
-hpa_try_purge(tsdn_t *tsdn, hpa_shard_t *shard) {
-	malloc_mutex_assert_owner(tsdn, &shard->mtx);
+/*
+ * This is used for jemalloc internal tuning and may change in the
+ * future based on production traffic.
+ *
+ * This value protects two things:
+ *    1. Stack size
+ *    2. Number of huge pages that are being purged in a batch as
+ *       we do not allow allocations while making *madvise
+ *       syscall.
+ */
+#define HPA_PURGE_BATCH_MAX_DEFAULT 16
 
-	hpdata_t *to_purge = psset_pick_purge(&shard->psset);
+#ifndef JEMALLOC_JET
+#define HPA_PURGE_BATCH_MAX HPA_PURGE_BATCH_MAX_DEFAULT
+#else
+size_t hpa_purge_max_batch_size_for_test = HPA_PURGE_BATCH_MAX_DEFAULT;
+size_t
+hpa_purge_max_batch_size_for_test_set(size_t new_size) {
+	size_t old_size = hpa_purge_max_batch_size_for_test;
+	hpa_purge_max_batch_size_for_test = new_size;
+	return old_size;
+}
+#define HPA_PURGE_BATCH_MAX hpa_purge_max_batch_size_for_test
+#endif
+
+static inline size_t
+hpa_process_madvise_max_iovec_len(void) {
+	assert(opt_process_madvise_max_batch <=
+		PROCESS_MADVISE_MAX_BATCH_LIMIT);
+	return opt_process_madvise_max_batch == 0 ?
+		HPA_MIN_VAR_VEC_SIZE : opt_process_madvise_max_batch;
+}
+
+static inline void
+hpa_purge_actual_unlocked(hpa_shard_t *shard, hpa_purge_item_t *batch,
+	size_t batch_sz) {
+	assert(batch_sz > 0);
+
+	size_t len = hpa_process_madvise_max_iovec_len();
+	VARIABLE_ARRAY(hpa_io_vector_t, vec, len);
+
+	hpa_range_accum_t accum;
+	hpa_range_accum_init(&accum, vec, len);
+
+	for (size_t i = 0; i < batch_sz; ++i) {
+		hpdata_t *to_purge = batch[i].hp;
+
+		/* Actually do the purging, now that the lock is dropped. */
+		if (batch[i].dehugify) {
+			shard->central->hooks.dehugify(hpdata_addr_get(to_purge),
+		    	HUGEPAGE);
+		}
+		void *purge_addr;
+		size_t purge_size;
+		size_t total_purged_on_one_hp = 0;
+		while (hpdata_purge_next(
+				to_purge, &batch[i].state, &purge_addr, &purge_size)) {
+			total_purged_on_one_hp += purge_size;
+			assert(total_purged_on_one_hp <= HUGEPAGE);
+			hpa_range_accum_add(&accum, purge_addr, purge_size, shard);
+		}
+	}
+	hpa_range_accum_finish(&accum, shard);
+}
+
+/* Prepare purge of one page. Return num of dirty regular pages on it
+ * Return 0 if no purgable huge page is found
+ *
+ * If there was a page to purge its purge state is initialized
+ */
+static inline size_t
+hpa_purge_start_hp(hpa_purge_batch_t *b, psset_t *psset) {
+	hpdata_t *to_purge = psset_pick_purge(psset);
 	if (to_purge == NULL) {
-		return false;
+		return 0;
 	}
 	assert(hpdata_purge_allowed_get(to_purge));
 	assert(!hpdata_changing_state_get(to_purge));
@@ -390,7 +468,7 @@ hpa_try_purge(tsdn_t *tsdn, hpa_shard_t *shard) {
 	 * we're purging it (allocations and deallocations are
 	 * OK).
 	 */
-	psset_update_begin(&shard->psset, to_purge);
+	psset_update_begin(psset, to_purge);
 	assert(hpdata_alloc_allowed_get(to_purge));
 	hpdata_mid_purge_set(to_purge, true);
 	hpdata_purge_allowed_set(to_purge, false);
@@ -403,59 +481,115 @@ hpa_try_purge(tsdn_t *tsdn, hpa_shard_t *shard) {
 	 * (clearing out user data).
 	 */
 	hpdata_alloc_allowed_set(to_purge, false);
-	psset_update_end(&shard->psset, to_purge);
+	psset_update_end(psset, to_purge);
 
+	assert(b->item_cnt < b->items_capacity);
+	hpa_purge_item_t *hp_item = &b->items[b->item_cnt];
+	b->item_cnt++;
+	hp_item->hp = to_purge;
 	/* Gather all the metadata we'll need during the purge. */
-	bool dehugify = hpdata_huge_get(to_purge);
-	hpdata_purge_state_t purge_state;
-	size_t num_to_purge = hpdata_purge_begin(to_purge, &purge_state);
+	hp_item->dehugify = hpdata_huge_get(hp_item->hp);
+	size_t nranges;
+	size_t ndirty =
+		hpdata_purge_begin(hp_item->hp, &hp_item->state, &nranges);
+	/* We picked hp to purge, so it should have some dirty ranges */
+	assert(ndirty > 0 && nranges >0);
+	b->ndirty_in_batch += ndirty;
+	b->nranges += nranges;
+	return ndirty;
+}
 
-	shard->npending_purge += num_to_purge;
-
-	malloc_mutex_unlock(tsdn, &shard->mtx);
-
-	/* Actually do the purging, now that the lock is dropped. */
-	if (dehugify) {
-		shard->central->hooks.dehugify(hpdata_addr_get(to_purge),
-		    HUGEPAGE);
-	}
-	size_t total_purged = 0;
-	uint64_t purges_this_pass = 0;
-	void *purge_addr;
-	size_t purge_size;
-	while (hpdata_purge_next(to_purge, &purge_state, &purge_addr,
-	    &purge_size)) {
-		total_purged += purge_size;
-		assert(total_purged <= HUGEPAGE);
-		purges_this_pass++;
-		shard->central->hooks.purge(purge_addr, purge_size);
-	}
-
-	malloc_mutex_lock(tsdn, &shard->mtx);
-	/* The shard updates */
-	shard->npending_purge -= num_to_purge;
-	shard->stats.npurge_passes++;
-	shard->stats.npurges += purges_this_pass;
-	shard->central->hooks.curtime(&shard->last_purge,
-	    /* first_reading */ false);
-	if (dehugify) {
+/* Finish purge of one huge page. */
+static inline void
+hpa_purge_finish_hp(tsdn_t *tsdn, hpa_shard_t *shard,
+	hpa_purge_item_t *hp_item) {
+	if (hp_item->dehugify) {
 		shard->stats.ndehugifies++;
 	}
-
 	/* The hpdata updates. */
-	psset_update_begin(&shard->psset, to_purge);
-	if (dehugify) {
-		hpdata_dehugify(to_purge);
+	psset_update_begin(&shard->psset, hp_item->hp);
+	if (hp_item->dehugify) {
+		hpdata_dehugify(hp_item->hp);
 	}
-	hpdata_purge_end(to_purge, &purge_state);
-	hpdata_mid_purge_set(to_purge, false);
+	hpdata_purge_end(hp_item->hp, &hp_item->state);
+	hpdata_mid_purge_set(hp_item->hp, false);
 
-	hpdata_alloc_allowed_set(to_purge, true);
-	hpa_update_purge_hugify_eligibility(tsdn, shard, to_purge);
+	hpdata_alloc_allowed_set(hp_item->hp, true);
+	hpa_update_purge_hugify_eligibility(tsdn, shard, hp_item->hp);
 
-	psset_update_end(&shard->psset, to_purge);
+	psset_update_end(&shard->psset, hp_item->hp);
+}
 
-	return true;
+static inline bool
+hpa_batch_full(hpa_purge_batch_t *b) {
+	/* It's okay for ranges to go above */
+	return b->npurged_hp_total == b->max_hp ||
+		b->item_cnt == b->items_capacity ||
+		b->nranges >= b->range_watermark;
+}
+
+static inline void
+hpa_batch_pass_start(hpa_purge_batch_t *b) {
+	b->item_cnt = 0;
+	b->nranges = 0;
+	b->ndirty_in_batch = 0;
+}
+
+static inline bool
+hpa_batch_empty(hpa_purge_batch_t *b) {
+	return b->item_cnt == 0;
+}
+
+/* Returns number of huge pages purged. */
+static inline size_t
+hpa_purge(tsdn_t *tsdn, hpa_shard_t *shard, size_t max_hp) {
+	malloc_mutex_assert_owner(tsdn, &shard->mtx);
+	assert(max_hp > 0);
+
+	assert(HPA_PURGE_BATCH_MAX > 0);
+	assert(HPA_PURGE_BATCH_MAX <
+		(VARIABLE_ARRAY_SIZE_MAX / sizeof(hpa_purge_item_t)));
+	VARIABLE_ARRAY(hpa_purge_item_t, items, HPA_PURGE_BATCH_MAX);
+	hpa_purge_batch_t batch = {
+		.max_hp = max_hp,
+		.npurged_hp_total = 0,
+		.items = &items[0],
+		.items_capacity = HPA_PURGE_BATCH_MAX,
+		.range_watermark = hpa_process_madvise_max_iovec_len(),
+	};
+	assert(batch.range_watermark > 0);
+
+	while (1) {
+		hpa_batch_pass_start(&batch);
+		assert(hpa_batch_empty(&batch));
+		while(!hpa_batch_full(&batch) && hpa_should_purge(tsdn, shard)) {
+			size_t ndirty = hpa_purge_start_hp(&batch, &shard->psset);
+			if (ndirty == 0) {
+				break;
+			}
+			shard->npending_purge += ndirty;
+			batch.npurged_hp_total++;
+		}
+
+		if (hpa_batch_empty(&batch)) {
+			break;
+		}
+		malloc_mutex_unlock(tsdn, &shard->mtx);
+		hpa_purge_actual_unlocked(shard, batch.items, batch.item_cnt);
+		malloc_mutex_lock(tsdn, &shard->mtx);
+
+		/* The shard updates */
+		shard->npending_purge -= batch.ndirty_in_batch;
+		shard->stats.npurges += batch.ndirty_in_batch;
+		shard->central->hooks.curtime(&shard->last_purge,
+			/* first_reading */ false);
+		for (size_t i=0; i<batch.item_cnt; ++i) {
+			hpa_purge_finish_hp(tsdn, shard, &batch.items[i]);
+		}
+	}
+	malloc_mutex_assert_owner(tsdn, &shard->mtx);
+	shard->stats.npurge_passes++;
+	return batch.npurged_hp_total;
 }
 
 /* Returns whether or not we hugified anything. */
@@ -495,10 +629,23 @@ hpa_try_hugify(tsdn_t *tsdn, hpa_shard_t *shard) {
 
 	malloc_mutex_unlock(tsdn, &shard->mtx);
 
-	shard->central->hooks.hugify(hpdata_addr_get(to_hugify), HUGEPAGE);
+	bool err = shard->central->hooks.hugify(hpdata_addr_get(to_hugify),
+	    HUGEPAGE, shard->opts.hugify_sync);
 
 	malloc_mutex_lock(tsdn, &shard->mtx);
 	shard->stats.nhugifies++;
+	if (err) {
+		/*
+		 * When asynchronious hugification is used
+		 * (shard->opts.hugify_sync option is false), we are not
+		 * expecting to get here, unless something went terrible wrong.
+		 * Because underlying syscall is only setting kernel flag for
+		 * memory range (actual hugification happens asynchroniously
+		 * and we are not getting any feedback about its outcome), we
+		 * expect syscall to be successful all the time.
+		 */
+		shard->stats.nhugify_failures++;
+	}
 
 	psset_update_begin(&shard->psset, to_hugify);
 	hpdata_hugify(to_hugify);
@@ -512,14 +659,9 @@ hpa_try_hugify(tsdn_t *tsdn, hpa_shard_t *shard) {
 static bool
 hpa_min_purge_interval_passed(tsdn_t *tsdn, hpa_shard_t *shard) {
 	malloc_mutex_assert_owner(tsdn, &shard->mtx);
-	if (shard->opts.experimental_strict_min_purge_interval) {
-		uint64_t since_last_purge_ms = shard->central->hooks.ms_since(
-		    &shard->last_purge);
-		if (since_last_purge_ms < shard->opts.min_purge_interval_ms) {
-		     return false;
-		}
-	}
-	return true;
+	uint64_t since_last_purge_ms = shard->central->hooks.ms_since(
+	    &shard->last_purge);
+	return since_last_purge_ms >= shard->opts.min_purge_interval_ms;
 }
 
 /*
@@ -567,19 +709,9 @@ hpa_shard_maybe_do_deferred_work(tsdn_t *tsdn, hpa_shard_t *shard,
 			max_purges = max_purge_nhp;
 		}
 
-		while (hpa_should_purge(tsdn, shard) && nops < max_purges) {
-			if (!hpa_try_purge(tsdn, shard)) {
-				/*
-				 * It is fine if we couldn't purge as sometimes
-				 * we try to purge just to unblock
-				 * hugification, but there is maybe no dirty
-				 * pages at all at the moment.
-				 */
-				break;
-			}
-			malloc_mutex_assert_owner(tsdn, &shard->mtx);
-			nops++;
-		}
+		malloc_mutex_assert_owner(tsdn, &shard->mtx);
+		nops += hpa_purge(tsdn, shard, max_purges);
+		malloc_mutex_assert_owner(tsdn, &shard->mtx);
 	}
 
 	/*
@@ -688,7 +820,7 @@ hpa_alloc_batch_psset(tsdn_t *tsdn, hpa_shard_t *shard, size_t size,
     bool *deferred_work_generated) {
 	assert(size <= HUGEPAGE);
 	assert(size <= shard->opts.slab_max_alloc ||
-	    size == sz_index2size(sz_size2index(size)));
+	    size == sz_s2u(size));
 	bool oom = false;
 
 	size_t nsuccess = hpa_try_alloc_batch_no_grow(tsdn, shard, size, &oom,
@@ -719,7 +851,8 @@ hpa_alloc_batch_psset(tsdn_t *tsdn, hpa_shard_t *shard, size_t size,
 	 * deallocations (and allocations of smaller sizes) may still succeed
 	 * while we're doing this potentially expensive system call.
 	 */
-	hpdata_t *ps = hpa_central_extract(tsdn, shard->central, size, &oom);
+	hpdata_t *ps = hpa_central_extract(tsdn, shard->central, size,
+	    shard->age_counter++, &oom);
 	if (ps == NULL) {
 		malloc_mutex_unlock(tsdn, &shard->grow_mtx);
 		return nsuccess;

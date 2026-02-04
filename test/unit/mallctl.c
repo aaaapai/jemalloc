@@ -255,6 +255,7 @@ TEST_BEGIN(test_mallctl_config) {
 	TEST_MALLCTL_CONFIG(prof, bool);
 	TEST_MALLCTL_CONFIG(prof_libgcc, bool);
 	TEST_MALLCTL_CONFIG(prof_libunwind, bool);
+	TEST_MALLCTL_CONFIG(prof_frameptr, bool);
 	TEST_MALLCTL_CONFIG(stats, bool);
 	TEST_MALLCTL_CONFIG(utrace, bool);
 	TEST_MALLCTL_CONFIG(xmalloc, bool);
@@ -287,13 +288,12 @@ TEST_BEGIN(test_mallctl_opt) {
 	TEST_MALLCTL_OPT(const char *, dss, always);
 	TEST_MALLCTL_OPT(bool, hpa, always);
 	TEST_MALLCTL_OPT(size_t, hpa_slab_max_alloc, always);
+	TEST_MALLCTL_OPT(bool, hpa_hugify_sync, always);
 	TEST_MALLCTL_OPT(size_t, hpa_sec_nshards, always);
 	TEST_MALLCTL_OPT(size_t, hpa_sec_max_alloc, always);
 	TEST_MALLCTL_OPT(size_t, hpa_sec_max_bytes, always);
 	TEST_MALLCTL_OPT(size_t, hpa_sec_bytes_after_flush, always);
 	TEST_MALLCTL_OPT(size_t, hpa_sec_batch_fill_extra, always);
-	TEST_MALLCTL_OPT(bool, experimental_hpa_strict_min_purge_interval,
-	    always);
 	TEST_MALLCTL_OPT(ssize_t, experimental_hpa_max_purge_nhp, always);
 	TEST_MALLCTL_OPT(unsigned, narenas, always);
 	TEST_MALLCTL_OPT(const char *, percpu_arena, always);
@@ -319,6 +319,7 @@ TEST_BEGIN(test_mallctl_opt) {
 	TEST_MALLCTL_OPT(bool, prof_active, prof);
 	TEST_MALLCTL_OPT(unsigned, prof_bt_max, prof);
 	TEST_MALLCTL_OPT(ssize_t, lg_prof_sample, prof);
+	TEST_MALLCTL_OPT(ssize_t, experimental_lg_prof_threshold, prof);
 	TEST_MALLCTL_OPT(bool, prof_accum, prof);
 	TEST_MALLCTL_OPT(bool, prof_pid_namespace, prof);
 	TEST_MALLCTL_OPT(ssize_t, lg_prof_interval, prof);
@@ -331,6 +332,8 @@ TEST_BEGIN(test_mallctl_opt) {
 	TEST_MALLCTL_OPT(bool, prof_sys_thread_name, prof);
 	TEST_MALLCTL_OPT(ssize_t, lg_san_uaf_align, uaf_detection);
 	TEST_MALLCTL_OPT(unsigned, debug_double_free_max_scan, always);
+	TEST_MALLCTL_OPT(bool, disable_large_size_classes, always);
+	TEST_MALLCTL_OPT(size_t, process_madvise_max_batch, always);
 
 #undef TEST_MALLCTL_OPT
 }
@@ -1002,6 +1005,63 @@ TEST_BEGIN(test_stats_arenas) {
 }
 TEST_END
 
+TEST_BEGIN(test_stats_arenas_hpa_shard_counters) {
+	test_skip_if(!config_stats);
+
+#define TEST_STATS_ARENAS_HPA_SHARD_COUNTERS(t, name) do {		\
+	t name;								\
+	size_t sz = sizeof(t);						\
+	expect_d_eq(mallctl("stats.arenas.0.hpa_shard."#name,		\
+	    (void *)&name, &sz,						\
+	    NULL, 0), 0, "Unexpected mallctl() failure");		\
+} while (0)
+
+	TEST_STATS_ARENAS_HPA_SHARD_COUNTERS(size_t, npageslabs);
+	TEST_STATS_ARENAS_HPA_SHARD_COUNTERS(size_t, nactive);
+	TEST_STATS_ARENAS_HPA_SHARD_COUNTERS(size_t, ndirty);
+	TEST_STATS_ARENAS_HPA_SHARD_COUNTERS(uint64_t, npurge_passes);
+	TEST_STATS_ARENAS_HPA_SHARD_COUNTERS(uint64_t, npurges);
+	TEST_STATS_ARENAS_HPA_SHARD_COUNTERS(uint64_t, nhugifies);
+	TEST_STATS_ARENAS_HPA_SHARD_COUNTERS(uint64_t, ndehugifies);
+
+#undef TEST_STATS_ARENAS_HPA_SHARD_COUNTERS
+}
+TEST_END
+
+TEST_BEGIN(test_stats_arenas_hpa_shard_slabs) {
+	test_skip_if(!config_stats);
+
+#define TEST_STATS_ARENAS_HPA_SHARD_SLABS_GEN(t, slab, name) do {	\
+	t slab##_##name;						\
+	size_t sz = sizeof(t);						\
+	expect_d_eq(mallctl("stats.arenas.0.hpa_shard."#slab"."#name,	\
+	    (void *)&slab##_##name, &sz,				\
+	    NULL, 0), 0, "Unexpected mallctl() failure");		\
+} while (0)
+
+#define TEST_STATS_ARENAS_HPA_SHARD_SLABS(t, slab, name) do {		\
+	TEST_STATS_ARENAS_HPA_SHARD_SLABS_GEN(t, slab,			\
+	    name##_##nonhuge);						\
+	TEST_STATS_ARENAS_HPA_SHARD_SLABS_GEN(t, slab, name##_##huge);	\
+} while (0)
+
+	TEST_STATS_ARENAS_HPA_SHARD_SLABS(size_t, slabs, npageslabs);
+	TEST_STATS_ARENAS_HPA_SHARD_SLABS(size_t, slabs, nactive);
+	TEST_STATS_ARENAS_HPA_SHARD_SLABS(size_t, slabs, ndirty);
+
+	TEST_STATS_ARENAS_HPA_SHARD_SLABS(size_t, full_slabs, npageslabs);
+	TEST_STATS_ARENAS_HPA_SHARD_SLABS(size_t, full_slabs, nactive);
+	TEST_STATS_ARENAS_HPA_SHARD_SLABS(size_t, full_slabs, ndirty);
+
+	TEST_STATS_ARENAS_HPA_SHARD_SLABS(size_t, empty_slabs, npageslabs);
+	TEST_STATS_ARENAS_HPA_SHARD_SLABS(size_t, empty_slabs, nactive);
+	TEST_STATS_ARENAS_HPA_SHARD_SLABS(size_t, empty_slabs, ndirty);
+
+#undef TEST_STATS_ARENAS_HPA_SHARD_SLABS
+#undef TEST_STATS_ARENAS_HPA_SHARD_SLABS_GEN
+}
+TEST_END
+
 static void
 alloc_hook(void *extra, UNUSED hook_alloc_t type, UNUSED void *result,
     UNUSED uintptr_t result_raw, UNUSED uintptr_t args_raw[3]) {
@@ -1321,6 +1381,8 @@ main(void) {
 	    test_arenas_lookup,
 	    test_prof_active,
 	    test_stats_arenas,
+	    test_stats_arenas_hpa_shard_counters,
+	    test_stats_arenas_hpa_shard_slabs,
 	    test_hooks,
 	    test_hooks_exhaustion,
 	    test_thread_idle,

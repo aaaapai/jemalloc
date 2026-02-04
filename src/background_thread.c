@@ -63,6 +63,9 @@ pthread_create_fptr_init(void) {
 	 */
 #ifdef JEMALLOC_HAVE_DLSYM
 	pthread_create_fptr = dlsym(RTLD_NEXT, "pthread_create");
+	if (pthread_create_fptr == NULL) {
+		pthread_create_fptr = dlsym(RTLD_DEFAULT, "pthread_create");
+	}
 #else
 	pthread_create_fptr = NULL;
 #endif
@@ -153,6 +156,26 @@ set_current_thread_affinity(int cpu) {
 /* Minimal sleep interval 100 ms. */
 #define BACKGROUND_THREAD_MIN_INTERVAL_NS (BILLION / 10)
 
+static int
+background_thread_cond_wait(background_thread_info_t *info,
+    struct timespec *ts) {
+	int ret;
+
+	/*
+	 * pthread_cond_wait drops and re-acquires the mutex internally, w/o
+	 * going through our wrapper.  Update the locked state explicitly.
+	 */
+	atomic_store_b(&info->mtx.locked, false, ATOMIC_RELAXED);
+	if (ts == NULL) {
+		ret = pthread_cond_wait(&info->cond, &info->mtx.lock);
+	} else {
+		ret = pthread_cond_timedwait(&info->cond, &info->mtx.lock, ts);
+	}
+	atomic_store_b(&info->mtx.locked, true, ATOMIC_RELAXED);
+
+	return ret;
+}
+
 static void
 background_thread_sleep(tsdn_t *tsdn, background_thread_info_t *info,
     uint64_t interval) {
@@ -171,7 +194,7 @@ background_thread_sleep(tsdn_t *tsdn, background_thread_info_t *info,
 	if (interval == BACKGROUND_THREAD_INDEFINITE_SLEEP) {
 		background_thread_wakeup_time_set(tsdn, info,
 		    BACKGROUND_THREAD_INDEFINITE_SLEEP);
-		ret = pthread_cond_wait(&info->cond, &info->mtx.lock);
+		ret = background_thread_cond_wait(info, NULL);
 		assert(ret == 0);
 	} else {
 		assert(interval >= BACKGROUND_THREAD_MIN_INTERVAL_NS &&
@@ -193,7 +216,7 @@ background_thread_sleep(tsdn_t *tsdn, background_thread_info_t *info,
 		ts.tv_nsec = (size_t)nstime_nsec(&ts_wakeup);
 
 		assert(!background_thread_indefinite_sleep(info));
-		ret = pthread_cond_timedwait(&info->cond, &info->mtx.lock, &ts);
+		ret = background_thread_cond_wait(info, &ts);
 		assert(ret == ETIMEDOUT || ret == 0);
 	}
 	if (config_stats) {
@@ -799,7 +822,6 @@ background_thread_boot1(tsdn_t *tsdn, base_t *base) {
 	}
 	max_background_threads = opt_max_background_threads;
 
-	background_thread_enabled_set(tsdn, opt_background_thread);
 	if (malloc_mutex_init(&background_thread_lock,
 	    "background_thread_global",
 	    WITNESS_RANK_BACKGROUND_THREAD_GLOBAL,
@@ -830,7 +852,8 @@ background_thread_boot1(tsdn_t *tsdn, base_t *base) {
 		background_thread_info_init(tsdn, info);
 		malloc_mutex_unlock(tsdn, &info->mtx);
 	}
+	/* Using _impl to bypass the locking check during init. */
+	background_thread_enabled_set_impl(opt_background_thread);
 #endif
-
 	return false;
 }

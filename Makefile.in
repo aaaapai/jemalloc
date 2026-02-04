@@ -142,8 +142,10 @@ C_SRCS := $(srcroot)src/jemalloc.c \
 	$(srcroot)src/prof_data.c \
 	$(srcroot)src/prof_log.c \
 	$(srcroot)src/prof_recent.c \
+	$(srcroot)src/prof_stack_range.c \
 	$(srcroot)src/prof_stats.c \
 	$(srcroot)src/prof_sys.c \
+	$(srcroot)src/prof_threshold.c \
 	$(srcroot)src/psset.c \
 	$(srcroot)src/rtree.c \
 	$(srcroot)src/safety_check.c \
@@ -228,8 +230,9 @@ TESTS_UNIT := \
 	$(srcroot)test/unit/hash.c \
 	$(srcroot)test/unit/hook.c \
 	$(srcroot)test/unit/hpa.c \
+	$(srcroot)test/unit/hpa_vectorized_madvise.c \
+	$(srcroot)test/unit/hpa_vectorized_madvise_large_batch.c \
 	$(srcroot)test/unit/hpa_background_thread.c \
-	$(srcroot)test/unit/hpa_validate_conf.c \
 	$(srcroot)test/unit/hpdata.c \
 	$(srcroot)test/unit/huge.c \
 	$(srcroot)test/unit/inspect.c \
@@ -266,6 +269,8 @@ TESTS_UNIT := \
 	$(srcroot)test/unit/prof_stats.c \
 	$(srcroot)test/unit/prof_tctx.c \
 	$(srcroot)test/unit/prof_thread_name.c \
+	$(srcroot)test/unit/prof_threshold.c \
+	$(srcroot)test/unit/prof_threshold_small.c \
 	$(srcroot)test/unit/prof_sys_thread_name.c \
 	$(srcroot)test/unit/psset.c \
 	$(srcroot)test/unit/ql.c \

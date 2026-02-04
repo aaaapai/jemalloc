@@ -39,6 +39,7 @@ extern atomic_zu_t zero_realloc_count;
 extern bool opt_cache_oblivious;
 extern unsigned opt_debug_double_free_max_scan;
 extern size_t opt_calloc_madvise_threshold;
+extern bool opt_disable_large_size_classes;
 
 extern const char *opt_malloc_conf_symlink;
 extern const char *opt_malloc_conf_env_var;
@@ -60,6 +61,8 @@ extern unsigned manual_arena_base;
  * arenas array are necessarily used; arenas are created lazily as needed.
  */
 extern atomic_p_t arenas[];
+
+extern unsigned huge_arena_ind;
 
 void *a0malloc(size_t size);
 void a0dalloc(void *ptr);

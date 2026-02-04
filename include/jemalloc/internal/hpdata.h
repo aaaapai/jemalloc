@@ -20,8 +20,14 @@
  * an observable property of any given region of address space).  It's just
  * hugepage-sized and hugepage-aligned; it's *potentially* huge.
  */
+
+/*
+ * The max enumeration num should not exceed 2^16 - 1, see comments in edata.h
+ * for ESET_ENUMERATE_MAX_NUM for more details.
+ */
+#define PSSET_ENUMERATE_MAX_NUM 32
 typedef struct hpdata_s hpdata_t;
-ph_structs(hpdata_age_heap, hpdata_t);
+ph_structs(hpdata_age_heap, hpdata_t, PSSET_ENUMERATE_MAX_NUM);
 struct hpdata_s {
 	/*
 	 * We likewise follow the edata convention of mangling names and forcing
@@ -389,9 +395,11 @@ struct hpdata_purge_state_s {
  * until you're done, and then end.  Allocating out of an hpdata undergoing
  * purging is not allowed.
  *
- * Returns the number of dirty pages that will be purged.
+ * Returns the number of dirty pages that will be purged and sets nranges
+ * to number of ranges with dirty pages that will be purged.
  */
-size_t hpdata_purge_begin(hpdata_t *hpdata, hpdata_purge_state_t *purge_state);
+size_t hpdata_purge_begin(hpdata_t *hpdata, hpdata_purge_state_t *purge_state,
+    size_t *nranges);
 
 /*
  * If there are more extents to purge, sets *r_purge_addr and *r_purge_size to

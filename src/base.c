@@ -55,9 +55,6 @@ base_map(tsdn_t *tsdn, ehooks_t *ehooks, unsigned ind, size_t size) {
 	}
 	if (ehooks_are_default(ehooks)) {
 		addr = extent_alloc_mmap(NULL, size, alignment, &zero, &commit);
-		if (have_madvise_huge && addr) {
-			pages_set_thp_state(addr, size);
-		}
 	} else {
 		addr = ehooks_alloc(tsdn, ehooks, NULL, size, alignment, &zero,
 		    &commit);
@@ -154,6 +151,42 @@ base_get_num_blocks(base_t *base, bool with_new_block) {
 }
 
 static void
+huge_arena_auto_thp_switch(tsdn_t *tsdn, pac_thp_t *pac_thp) {
+	assert(opt_huge_arena_pac_thp);
+#ifdef JEMALLOC_JET
+	if (pac_thp->auto_thp_switched) {
+		return;
+	}
+#else
+	/*
+	 * The switch should be turned on only once when the b0 auto thp switch is
+	 * turned on, unless it's a unit test where b0 gets deleted and then
+	 * recreated.
+	 */
+	assert(!pac_thp->auto_thp_switched);
+#endif
+
+	edata_list_active_t *pending_list;
+	malloc_mutex_lock(tsdn, &pac_thp->lock);
+	pending_list = &pac_thp->thp_lazy_list;
+	pac_thp->auto_thp_switched = true;
+	malloc_mutex_unlock(tsdn, &pac_thp->lock);
+
+	unsigned cnt = 0;
+	edata_t *edata;
+	ql_foreach(edata, &pending_list->head, ql_link_active) {
+		assert(edata != NULL);
+		void *addr = edata_addr_get(edata);
+		size_t size = edata_size_get(edata);
+		assert(HUGEPAGE_ADDR2BASE(addr) == addr);
+		assert(HUGEPAGE_CEILING(size) == size && size != 0);
+		pages_huge(addr, size);
+		cnt++;
+	}
+	assert(cnt == atomic_load_u(&pac_thp->n_thp_lazy, ATOMIC_RELAXED));
+}
+
+static void
 base_auto_thp_switch(tsdn_t *tsdn, base_t *base) {
 	assert(opt_metadata_thp == metadata_thp_auto);
 	malloc_mutex_assert_owner(tsdn, &base->mtx);
@@ -187,6 +220,25 @@ base_auto_thp_switch(tsdn_t *tsdn, base_t *base) {
 		block = block->next;
 		assert(block == NULL || (base_ind_get(base) == 0));
 	}
+
+	/* Handle the THP auto switch for the huge arena. */
+	if (!huge_arena_pac_thp.thp_madvise || base_ind_get(base) != 0) {
+		/*
+		 * The huge arena THP auto-switch is triggered only by b0 switch,
+		 * provided that the huge arena is initialized. If b0 switch is enabled
+		 * before huge arena is ready, the huge arena switch will be enabled
+		 * during huge_arena_pac_thp initialization.
+		 */
+		return;
+	}
+	/*
+	 * thp_madvise above is by default false and set in arena_init_huge() with
+	 * b0 mtx held. So if we reach here, it means the entire huge_arena_pac_thp
+	 * is initialized and we can safely switch the THP.
+	 */
+	malloc_mutex_unlock(tsdn, &base->mtx);
+	huge_arena_auto_thp_switch(tsdn, &huge_arena_pac_thp);
+	malloc_mutex_lock(tsdn, &base->mtx);
 }
 
 static void *

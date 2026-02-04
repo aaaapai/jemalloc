@@ -20,8 +20,9 @@ struct emap_s {
 };
 
 /* Used to pass rtree lookup context down the path. */
-typedef struct emap_alloc_ctx_t emap_alloc_ctx_t;
-struct emap_alloc_ctx_t {
+typedef struct emap_alloc_ctx_s emap_alloc_ctx_t;
+struct emap_alloc_ctx_s {
+	size_t usize;
 	szind_t szind;
 	bool slab;
 };
@@ -230,16 +231,44 @@ emap_edata_lookup(tsdn_t *tsdn, emap_t *emap, const void *ptr) {
 	return rtree_read(tsdn, &emap->rtree, rtree_ctx, (uintptr_t)ptr).edata;
 }
 
+JEMALLOC_ALWAYS_INLINE void
+emap_alloc_ctx_init(emap_alloc_ctx_t *alloc_ctx, szind_t szind, bool slab,
+    size_t usize) {
+	alloc_ctx->szind = szind;
+	alloc_ctx->slab = slab;
+	alloc_ctx->usize = usize;
+	assert(sz_large_size_classes_disabled() ||
+	    usize == sz_index2size(szind));
+}
+
+JEMALLOC_ALWAYS_INLINE size_t
+emap_alloc_ctx_usize_get(emap_alloc_ctx_t *alloc_ctx) {
+	assert(alloc_ctx->szind < SC_NSIZES);
+	if (alloc_ctx->slab) {
+		assert(alloc_ctx->usize == sz_index2size(alloc_ctx->szind));
+		return sz_index2size(alloc_ctx->szind);
+	}
+	assert(sz_large_size_classes_disabled() ||
+	    alloc_ctx->usize == sz_index2size(alloc_ctx->szind));
+	assert(alloc_ctx->usize <= SC_LARGE_MAXCLASS);
+	return alloc_ctx->usize;
+}
+
 /* Fills in alloc_ctx with the info in the map. */
 JEMALLOC_ALWAYS_INLINE void
 emap_alloc_ctx_lookup(tsdn_t *tsdn, emap_t *emap, const void *ptr,
     emap_alloc_ctx_t *alloc_ctx) {
 	EMAP_DECLARE_RTREE_CTX;
 
-	rtree_metadata_t metadata = rtree_metadata_read(tsdn, &emap->rtree,
+	rtree_contents_t contents = rtree_read(tsdn, &emap->rtree,
 	    rtree_ctx, (uintptr_t)ptr);
-	alloc_ctx->szind = metadata.szind;
-	alloc_ctx->slab = metadata.slab;
+	/*
+	 * If the alloc is invalid, do not calculate usize since edata
+	 * could be corrupted.
+	 */
+	emap_alloc_ctx_init(alloc_ctx, contents.metadata.szind,
+	    contents.metadata.slab, (contents.metadata.szind == SC_NSIZES
+	    || contents.edata == NULL)? 0: edata_usize_get(contents.edata));
 }
 
 /* The pointer must be mapped. */
@@ -293,8 +322,15 @@ emap_alloc_ctx_try_lookup_fast(tsd_t *tsd, emap_t *emap, const void *ptr,
 	if (err) {
 		return true;
 	}
+	/*
+	 * Small allocs using the fastpath can always use index to get the
+	 * usize.  Therefore, do not set alloc_ctx->usize here.
+	 */
 	alloc_ctx->szind = metadata.szind;
 	alloc_ctx->slab = metadata.slab;
+	if (config_debug) {
+		alloc_ctx->usize = SC_LARGE_MAXCLASS + 1;
+	}
 	return false;
 }
 
