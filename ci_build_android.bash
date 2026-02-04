@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-export API=21
+export API=24
 
 if   [ "$BUILD_ARCH" == "arm64" ]; then
   export NDK_ABI=arm64-v8a NDK_TARGET=aarch64
@@ -20,12 +20,12 @@ export CXXFLAGS="-D__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4=1"
 export CONFIGURE_FLAGS="--with-malloc-conf=percpu_arena:percpu,background_thread:true" 
 export EXTRA_CFLAGS="-O3 -Wno-array-bounds -flto=thin -Wno-int-conversion -fwhole-program-vtables -Wno-ignored-attributes -Wno-array-bounds -Wno-unknown-warning-option -Wno-ignored-attributes"
 export ANDROID_INCLUDE=$TOOLCHAIN/sysroot/usr/include
-export CPPFLAGS="-I$ANDROID_INCLUDE -I$ANDROID_INCLUDE/$TARGET "
+export CPPFLAGS="-I$ANDROID_INCLUDE -I$ANDROID_INCLUDE/$TARGET -mllvm -polly"
 export PATH=$TOOLCHAIN/bin:$PATH
-export LDFLAGS="-L$TOOLCHAIN/sysroot/usr/lib/${TARGET}/${API}"
+export LDFLAGS="-L$TOOLCHAIN/sysroot/usr/lib/${TARGET}/${API} -lc++abi -lc++_static"
 export thecc=$TOOLCHAIN/bin/${TARGET}${API}-clang
 export thecxx=$TOOLCHAIN/bin/${TARGET}${API}-clang++
-export DLLTOOL=/usr/bin/llvm-dlltool-18
+export DLLTOOL=/usr/bin/llvm-dlltool-21
 export CXXFILT=$TOOLCHAIN/bin/llvm-cxxfilt
 export NM=$TOOLCHAIN/bin/llvm-nm
 export CC=$thecc
