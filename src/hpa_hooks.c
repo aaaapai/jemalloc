@@ -2,41 +2,44 @@
 #include "jemalloc/internal/jemalloc_internal_includes.h"
 
 #include "jemalloc/internal/hpa_hooks.h"
+#include "jemalloc/internal/jemalloc_probe.h"
 
-static void *hpa_hooks_map(size_t size);
-static void hpa_hooks_unmap(void *ptr, size_t size);
-static void hpa_hooks_purge(void *ptr, size_t size);
-static bool hpa_hooks_hugify(void *ptr, size_t size, bool sync);
-static void hpa_hooks_dehugify(void *ptr, size_t size);
-static void hpa_hooks_curtime(nstime_t *r_nstime, bool first_reading);
+static void    *hpa_hooks_map(size_t size);
+static void     hpa_hooks_unmap(void *ptr, size_t size);
+static void     hpa_hooks_purge(void *ptr, size_t size);
+static bool     hpa_hooks_hugify(void *ptr, size_t size, bool sync);
+static void     hpa_hooks_dehugify(void *ptr, size_t size);
+static void     hpa_hooks_curtime(nstime_t *r_nstime, bool first_reading);
 static uint64_t hpa_hooks_ms_since(nstime_t *past_nstime);
-static bool hpa_hooks_vectorized_purge(
-	void *vec, size_t vlen, size_t nbytes);
+static bool hpa_hooks_vectorized_purge(void *vec, size_t vlen, size_t nbytes);
 
-const hpa_hooks_t hpa_hooks_default = {
-	&hpa_hooks_map,
-	&hpa_hooks_unmap,
-	&hpa_hooks_purge,
-	&hpa_hooks_hugify,
-	&hpa_hooks_dehugify,
-	&hpa_hooks_curtime,
-	&hpa_hooks_ms_since,
-	&hpa_hooks_vectorized_purge
-};
+const hpa_hooks_t hpa_hooks_default = {&hpa_hooks_map, &hpa_hooks_unmap,
+    &hpa_hooks_purge, &hpa_hooks_hugify, &hpa_hooks_dehugify,
+    &hpa_hooks_curtime, &hpa_hooks_ms_since, &hpa_hooks_vectorized_purge};
 
 static void *
 hpa_hooks_map(size_t size) {
+	/*
+	 * During development, we're primarily concerned with systems
+	 * that overcommit.  Eventually, we should be more careful here.
+	 */
+
 	bool commit = true;
-	return pages_map(NULL, size, HUGEPAGE, &commit);
+	assert((size & HUGEPAGE_MASK) == 0);
+	void *ret = pages_map(NULL, size, HUGEPAGE, &commit);
+	JE_USDT(hpa_map, 2, size, ret);
+	return ret;
 }
 
 static void
 hpa_hooks_unmap(void *ptr, size_t size) {
+	JE_USDT(hpa_unmap, 2, size, ptr);
 	pages_unmap(ptr, size);
 }
 
 static void
 hpa_hooks_purge(void *ptr, size_t size) {
+	JE_USDT(hpa_purge, 2, size, ptr);
 	pages_purge_forced(ptr, size);
 }
 
@@ -60,12 +63,14 @@ hpa_hooks_hugify(void *ptr, size_t size, bool sync) {
 	if (sync) {
 		err = pages_collapse(ptr, size);
 	}
+	JE_USDT(hpa_hugify, 4, size, ptr, err, sync);
 	return err;
 }
 
 static void
 hpa_hooks_dehugify(void *ptr, size_t size) {
 	bool err = pages_nohuge(ptr, size);
+	JE_USDT(hpa_dehugify, 3, size, ptr, err);
 	(void)err;
 }
 
@@ -82,13 +87,14 @@ hpa_hooks_ms_since(nstime_t *past_nstime) {
 	return nstime_ms_since(past_nstime);
 }
 
-
 /* Return true if we did not purge all nbytes, or on some error */
 static bool
 hpa_hooks_vectorized_purge(void *vec, size_t vlen, size_t nbytes) {
 #ifdef JEMALLOC_HAVE_PROCESS_MADVISE
-    return pages_purge_process_madvise(vec, vlen, nbytes);
+	bool err = pages_purge_process_madvise(vec, vlen, nbytes);
+	JE_USDT(hpa_vectorized_purge, 3, nbytes, vlen, err);
+	return err;
 #else
-    return true;
+	return true;
 #endif
 }

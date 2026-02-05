@@ -13,36 +13,41 @@ struct test_data_s {
 	 * Must be the first member -- we convert back and forth between the
 	 * test_data_t and the hpa_shard_t;
 	 */
-	hpa_shard_t shard;
+	hpa_shard_t   shard;
 	hpa_central_t central;
-	base_t *base;
+	base_t       *base;
 	edata_cache_t shard_edata_cache;
 
 	emap_t emap;
 };
 
 static hpa_shard_opts_t test_hpa_shard_opts_default = {
-	/* slab_max_alloc */
-	ALLOC_MAX,
-	/* hugification_threshold */
-	HUGEPAGE,
-	/* dirty_mult */
-	FXP_INIT_PERCENT(25),
-	/* deferral_allowed */
-	false,
-	/* hugify_delay_ms */
-	10 * 1000,
-	/* hugify_sync */
-	false,
-	/* min_purge_interval_ms */
-	5 * 1000,
-	/* experimental_max_purge_nhp */
-	-1
-};
+    /* slab_max_alloc */
+    ALLOC_MAX,
+    /* hugification_threshold */
+    HUGEPAGE,
+    /* dirty_mult */
+    FXP_INIT_PERCENT(25),
+    /* deferral_allowed */
+    false,
+    /* hugify_delay_ms */
+    10 * 1000,
+    /* hugify_sync */
+    false,
+    /* min_purge_interval_ms */
+    5 * 1000,
+    /* experimental_max_purge_nhp */
+    -1,
+    /* purge_threshold */
+    1,
+    /* purge_delay_ms */
+    0,
+    /* hugify_style */
+    hpa_hugify_style_lazy};
 
 static hpa_shard_t *
 create_test_data(const hpa_hooks_t *hooks, hpa_shard_opts_t *opts) {
-	bool err;
+	bool    err;
 	base_t *base = base_new(TSDN_NULL, /* ind */ SHARD_IND,
 	    &ehooks_default_extent_hooks, /* metadata_use_hooks */ true);
 	assert_ptr_not_null(base, "");
@@ -61,9 +66,12 @@ create_test_data(const hpa_hooks_t *hooks, hpa_shard_opts_t *opts) {
 	err = hpa_central_init(&test_data->central, test_data->base, hooks);
 	assert_false(err, "");
 
-	err = hpa_shard_init(&test_data->shard, &test_data->central,
+	sec_opts_t sec_opts;
+	sec_opts.nshards = 0;
+	tsdn_t *tsdn = tsd_tsdn(tsd_fetch());
+	err = hpa_shard_init(tsdn, &test_data->shard, &test_data->central,
 	    &test_data->emap, test_data->base, &test_data->shard_edata_cache,
-	    SHARD_IND, opts);
+	    SHARD_IND, opts, &sec_opts);
 	assert_false(err, "");
 
 	return (hpa_shard_t *)test_data;
@@ -108,7 +116,8 @@ defer_vectorized_purge(void *vec, size_t vlen, size_t nbytes) {
 }
 
 static bool defer_vec_purge_didfail = false;
-static bool defer_vectorized_purge_fail(void *vec, size_t vlen, size_t nbytes) {
+static bool
+defer_vectorized_purge_fail(void *vec, size_t vlen, size_t nbytes) {
 	(void)vec;
 	(void)vlen;
 	(void)nbytes;
@@ -141,8 +150,7 @@ defer_test_ms_since(nstime_t *past_time) {
 }
 
 TEST_BEGIN(test_vectorized_failure_fallback) {
-	test_skip_if(!hpa_supported() ||
-		(opt_process_madvise_max_batch == 0));
+	test_skip_if(!hpa_supported() || (opt_process_madvise_max_batch == 0));
 
 	hpa_hooks_t hooks;
 	hooks.map = &defer_test_map;
@@ -166,8 +174,8 @@ TEST_BEGIN(test_vectorized_failure_fallback) {
 	nstime_init(&defer_curtime, 0);
 	tsdn_t *tsdn = tsd_tsdn(tsd_fetch());
 
-	edata_t *edata = pai_alloc(tsdn, &shard->pai, PAGE, PAGE, false,
-	false, false, &deferred_work_generated);
+	edata_t *edata = pai_alloc(tsdn, &shard->pai, PAGE, PAGE, false, false,
+	    false, &deferred_work_generated);
 	expect_ptr_not_null(edata, "Unexpected null edata");
 	pai_dalloc(tsdn, &shard->pai, edata, &deferred_work_generated);
 	hpa_shard_do_deferred_work(tsdn, shard);
@@ -181,9 +189,8 @@ TEST_BEGIN(test_vectorized_failure_fallback) {
 TEST_END
 
 TEST_BEGIN(test_more_regions_purged_from_one_page) {
-	test_skip_if(!hpa_supported() ||
-		(opt_process_madvise_max_batch == 0) ||
-		HUGEPAGE_PAGES <= 4);
+	test_skip_if(!hpa_supported() || (opt_process_madvise_max_batch == 0)
+	    || HUGEPAGE_PAGES <= 4);
 
 	hpa_hooks_t hooks;
 	hooks.map = &defer_test_map;
@@ -208,7 +215,7 @@ TEST_BEGIN(test_more_regions_purged_from_one_page) {
 	nstime_init(&defer_curtime, 0);
 	tsdn_t *tsdn = tsd_tsdn(tsd_fetch());
 
-	enum {NALLOCS = 8 * HUGEPAGE_PAGES};
+	enum { NALLOCS = 8 * HUGEPAGE_PAGES };
 	edata_t *edatas[NALLOCS];
 	for (int i = 0; i < NALLOCS; i++) {
 		edatas[i] = pai_alloc(tsdn, &shard->pai, PAGE, PAGE, false,
@@ -249,80 +256,8 @@ TEST_BEGIN(test_more_regions_purged_from_one_page) {
 }
 TEST_END
 
-size_t
-hpa_purge_max_batch_size_for_test_set(size_t new_size);
-TEST_BEGIN(test_more_pages_than_batch_page_size) {
-	test_skip_if(!hpa_supported() ||
-		(opt_process_madvise_max_batch == 0) ||
-		HUGEPAGE_PAGES <= 4);
-
-	size_t old_page_batch = hpa_purge_max_batch_size_for_test_set(1);
-
-	hpa_hooks_t hooks;
-	hooks.map = &defer_test_map;
-	hooks.unmap = &defer_test_unmap;
-	hooks.purge = &defer_test_purge;
-	hooks.hugify = &defer_test_hugify;
-	hooks.dehugify = &defer_test_dehugify;
-	hooks.curtime = &defer_test_curtime;
-	hooks.ms_since = &defer_test_ms_since;
-	hooks.vectorized_purge = &defer_vectorized_purge;
-
-	hpa_shard_opts_t opts = test_hpa_shard_opts_default;
-	opts.deferral_allowed = true;
-	opts.min_purge_interval_ms = 0;
-	ndefer_vec_purge_calls = 0;
-	ndefer_purge_calls = 0;
-
-	hpa_shard_t *shard = create_test_data(&hooks, &opts);
-
-	bool deferred_work_generated = false;
-
-	nstime_init(&defer_curtime, 0);
-	tsdn_t *tsdn = tsd_tsdn(tsd_fetch());
-
-	enum {NALLOCS = 8 * HUGEPAGE_PAGES};
-	edata_t *edatas[NALLOCS];
-	for (int i = 0; i < NALLOCS; i++) {
-		edatas[i] = pai_alloc(tsdn, &shard->pai, PAGE, PAGE, false,
-		    false, false, &deferred_work_generated);
-		expect_ptr_not_null(edatas[i], "Unexpected null edata");
-	}
-	for (int i = 0; i < 3 * (int)HUGEPAGE_PAGES; i++) {
-		pai_dalloc(tsdn, &shard->pai, edatas[i],
-			&deferred_work_generated);
-	}
-
-	hpa_shard_do_deferred_work(tsdn, shard);
-
-	/*
-	 * Strict minimum purge interval is not set, we should purge as long as
-	 * we have dirty pages.
-	 */
-	expect_zu_eq(0, ndefer_hugify_calls, "Hugified too early");
-	expect_zu_eq(0, ndefer_dehugify_calls, "Dehugified too early");
-
-	/* We have page batch size = 1.
-	 * we have 5 * HP active pages, 3 * HP dirty pages
-	 * To achieve the balance of 25% max dirty we need to
-	 * purge 2 pages. Since batch is 1 that must be 2 calls
-	 * no matter what opt_process_madvise_max_batch is
-	 */
-	size_t nexpected = 2;
-	expect_zu_eq(nexpected, ndefer_vec_purge_calls, "Expect purge");
-	expect_zu_eq(0, ndefer_purge_calls, "Expect no non-vec purge");
-	ndefer_vec_purge_calls = 0;
-
-	hpa_purge_max_batch_size_for_test_set(old_page_batch);
-
-	destroy_test_data(shard);
-}
-TEST_END
-
 int
 main(void) {
-	return test_no_reentrancy(
-	    test_vectorized_failure_fallback,
-	    test_more_regions_purged_from_one_page,
-	    test_more_pages_than_batch_page_size);
+	return test_no_reentrancy(test_vectorized_failure_fallback,
+	    test_more_regions_purged_from_one_page);
 }

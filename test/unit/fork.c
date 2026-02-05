@@ -1,5 +1,34 @@
 #include "test/jemalloc_test.h"
-#include "test/fork.h"
+
+#ifndef _WIN32
+#	include <sys/wait.h>
+#endif
+
+#ifndef _WIN32
+static void
+wait_for_child_exit(int pid) {
+	int status;
+	while (true) {
+		if (waitpid(pid, &status, 0) == -1) {
+			test_fail("Unexpected waitpid() failure.");
+		}
+		if (WIFSIGNALED(status)) {
+			test_fail(
+			    "Unexpected child termination due to "
+			    "signal %d",
+			    WTERMSIG(status));
+			break;
+		}
+		if (WIFEXITED(status)) {
+			if (WEXITSTATUS(status) != 0) {
+				test_fail("Unexpected child exit value %d",
+				    WEXITSTATUS(status));
+			}
+			break;
+		}
+	}
+}
+#endif
 
 TEST_BEGIN(test_fork) {
 #ifndef _WIN32
@@ -8,7 +37,7 @@ TEST_BEGIN(test_fork) {
 
 	/* Set up a manually managed arena for test. */
 	unsigned arena_ind;
-	size_t sz = sizeof(unsigned);
+	size_t   sz = sizeof(unsigned);
 	expect_d_eq(mallctl("arenas.create", (void *)&arena_ind, &sz, NULL, 0),
 	    0, "Unexpected mallctl() failure");
 
@@ -16,8 +45,8 @@ TEST_BEGIN(test_fork) {
 	unsigned old_arena_ind;
 	sz = sizeof(old_arena_ind);
 	expect_d_eq(mallctl("thread.arena", (void *)&old_arena_ind, &sz,
-	    (void *)&arena_ind, sizeof(arena_ind)), 0,
-	    "Unexpected mallctl() failure");
+	                (void *)&arena_ind, sizeof(arena_ind)),
+	    0, "Unexpected mallctl() failure");
 
 	p = malloc(1);
 	expect_ptr_not_null(p, "Unexpected malloc() failure");
@@ -37,7 +66,7 @@ TEST_BEGIN(test_fork) {
 		/* Child. */
 		_exit(0);
 	} else {
-		fork_wait_for_child_exit(pid);
+		wait_for_child_exit(pid);
 	}
 #else
 	test_skip("fork(2) is irrelevant to Windows");
@@ -60,7 +89,7 @@ do_fork_thd(void *arg) {
 		test_fail("Exec failed");
 	} else {
 		/* Parent */
-		fork_wait_for_child_exit(pid);
+		wait_for_child_exit(pid);
 	}
 	return NULL;
 }
@@ -97,7 +126,7 @@ TEST_BEGIN(test_fork_multithreaded) {
 			do_test_fork_multithreaded();
 			_exit(0);
 		} else {
-			fork_wait_for_child_exit(pid);
+			wait_for_child_exit(pid);
 		}
 	}
 #else
@@ -108,7 +137,5 @@ TEST_END
 
 int
 main(void) {
-	return test_no_reentrancy(
-	    test_fork,
-	    test_fork_multithreaded);
+	return test_no_reentrancy(test_fork, test_fork_multithreaded);
 }

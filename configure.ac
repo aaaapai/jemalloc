@@ -652,7 +652,7 @@ AC_ARG_WITH([version],
   [AS_HELP_STRING([--with-version=<major>.<minor>.<bugfix>-<nrev>-g<gid>],
    [Version string])],
   [
-    echo "${with_version}" | grep ['^[0-9]\+\.[0-9]\+\.[0-9]\+-[0-9]\+-g[0-9a-f]\+$'] 2>&1 1>/dev/null
+    echo "${with_version}" | grep ['^[0-9]\{1,\}\.[0-9]\{1,\}\.[0-9]\{1,\}-[0-9]\{1,\}-g[0-9a-f]\{1,\}$'] 2>&1 1>/dev/null
     if test $? -eq 0 ; then
       echo "$with_version" > "${objroot}VERSION"
     else
@@ -1438,6 +1438,36 @@ if test "x$enable_experimental_smallocx" = "x1" ; then
 fi
 AC_SUBST([enable_experimental_smallocx])
 
+dnl Do not enable fastpath prefetch by default.
+AC_ARG_ENABLE([experimental_fp_prefetch],
+  [AS_HELP_STRING([--enable-experimental-fp-prefetch], [Enable experimental fastpath prefetch])],
+[if test "x$enable_experimental_fp_prefetch" = "xno" ; then
+enable_experimental_fp_prefetch="0"
+else
+  dnl Check if we have __builtin_prefetch.
+  JE_CFLAGS_SAVE()
+  JE_CFLAGS_ADD([-Werror=implicit-function-declaration])
+  JE_COMPILABLE([builtin prefetch], [], [
+void foo(void *p) { __builtin_prefetch(p, 1, 3); }
+  	],
+	[je_cv_have_builtin_prefetch])
+
+	if test "x${je_cv_have_builtin_prefetch}" = "xyes" ; then
+	   enable_experimental_fp_prefetch="1"
+	else
+	   enable_experimental_fp_prefetch="0"
+	   AC_MSG_ERROR([--enable--experimental-fp-prefetch can only be used when builtin_preftech is available])
+	fi
+   JE_CFLAGS_RESTORE()
+fi
+],
+[enable_experimental_fp_prefetch="0"]
+)
+if test "x$enable_experimental_fp_prefetch" = "x1" ; then
+  AC_DEFINE([JEMALLOC_EXPERIMENTAL_FASTPATH_PREFETCH], [ ], [ ])
+fi
+AC_SUBST([enable_experimental_fp_prefetch])
+
 dnl Do not enable profiling by default.
 AC_ARG_ENABLE([prof],
   [AS_HELP_STRING([--enable-prof], [Enable allocation profiling])],
@@ -1685,6 +1715,55 @@ else
 fi
 AC_SUBST([enable_utrace])
 
+dnl Disable experimental sdt tracing by default.
+AC_ARG_ENABLE([experimental-sdt],
+  [AS_HELP_STRING([--enable-experimental-sdt], [Enable systemtap USDT probes])],
+[if test "x$enable_experimental_sdt" = "xno" ; then
+  enable_experimental_sdt="0"
+else
+	JE_COMPILABLE([systemtap sdt], [
+#include <sys/sdt.h>
+	], [
+void foo(int i, void *p) { STAP_PROBE2(jemalloc, test, i, p); }
+  	],
+	[je_cv_stap_sdt])
+
+	if test "x${je_cv_stap_sdt}" = "xyes" ; then
+	   enable_experimental_sdt="1"
+	elif test "x${abi}" = "xelf" ; then
+	     case "${host}" in
+	     	  *-*-linux-android*)
+			case "${host_cpu}" in aarch64|x86_64)
+			     enable_experimental_sdt="2"
+			     ;;
+			esac
+			;;
+		  *-*-linux*)
+			case "${host_cpu}" in x86_64|aarch64|arm*)
+			      enable_experimental_sdt="2"
+			      ;;
+			esac
+		        ;;
+		  *)
+			enable_experimental_sdt="0"
+			AC_MSG_ERROR([Unsupported sdt on this platform])
+			;;
+	     esac
+	else
+	   AC_MSG_ERROR([Unsupported sdt on this platform])
+   	fi
+fi
+],
+[enable_experimental_sdt="0"]
+)
+
+if test "x$enable_experimental_sdt" = "x1" ; then
+    AC_DEFINE([JEMALLOC_EXPERIMENTAL_USDT_STAP], [ ], [ ])
+elif test "x$enable_experimental_sdt" = "x2"; then
+    AC_DEFINE([JEMALLOC_EXPERIMENTAL_USDT_CUSTOM], [ ], [ ])
+fi
+AC_SUBST([enable_experimental_sdt])
+
 dnl Do not support the xmalloc option by default.
 AC_ARG_ENABLE([xmalloc],
   [AS_HELP_STRING([--enable-xmalloc], [Support xmalloc option])],
@@ -1915,6 +1994,16 @@ case "${host}" in
         LG_PAGE=14
       fi
       ;;
+  *-*-linux-android)
+      if test "x$LG_PAGE" = "xdetect"; then
+	AC_CHECK_DECLS([PAGE_SIZE], [LG_PAGE=12], [LG_PAGE=14], [#include <sys/user.h>])
+      fi
+      ;;
+  aarch64-unknown-linux-*)
+      if test "x$LG_PAGE" = "xdetect"; then
+        LG_PAGE=16
+      fi
+      ;;
 esac
 if test "x$LG_PAGE" = "xdetect"; then
   AC_CACHE_CHECK([LG_PAGE],
@@ -1979,7 +2068,7 @@ if test "x${je_cv_lg_hugepage}" = "x" ; then
   dnl   Hugepagesize:       2048 kB
   if test -e "/proc/meminfo" ; then
     hpsk=[`cat /proc/meminfo 2>/dev/null | \
-          grep -e '^Hugepagesize:[[:space:]]\+[0-9]\+[[:space:]]kB$' | \
+          grep '^Hugepagesize:[[:space:]]\{1,\}[0-9]\{1,\}[[:space:]]kB$' | \
           awk '{print $2}'`]
     if test "x${hpsk}" != "x" ; then
       je_cv_lg_hugepage=10
@@ -2558,10 +2647,11 @@ if test "x${je_cv_madvise}" = "xyes" ; then
 
   dnl Check for process_madvise
   JE_COMPILABLE([process_madvise(2)], [
-#include <sys/mman.h>
+#include <sys/pidfd.h>
 #include <sys/syscall.h>
+#include <unistd.h>
 ], [
-	syscall(SYS_process_madvise, 0, (void *)0, 0, 0, 0);
+	syscall(SYS_process_madvise, PIDFD_SELF, (void *)0, 0, 0, 0);
 ], [je_cv_process_madvise])
   if test "x${je_cv_process_madvise}" = "xyes" ; then
     AC_DEFINE([JEMALLOC_HAVE_PROCESS_MADVISE], [ ], [ ])
@@ -3001,6 +3091,8 @@ AC_MSG_RESULT([DATADIR            : ${DATADIR}])
 AC_MSG_RESULT([INCLUDEDIR         : ${INCLUDEDIR}])
 AC_MSG_RESULT([LIBDIR             : ${LIBDIR}])
 AC_MSG_RESULT([MANDIR             : ${MANDIR}])
+AC_MSG_RESULT([])
+AC_MSG_RESULT([LG_PAGE            : ${LG_PAGE}])
 AC_MSG_RESULT([])
 AC_MSG_RESULT([srcroot            : ${srcroot}])
 AC_MSG_RESULT([abs_srcroot        : ${abs_srcroot}])

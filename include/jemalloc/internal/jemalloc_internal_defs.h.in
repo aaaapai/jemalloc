@@ -160,6 +160,11 @@
 /* JEMALLOC_EXPERIMENTAL_SMALLOCX_API enables experimental smallocx API. */
 #undef JEMALLOC_EXPERIMENTAL_SMALLOCX_API
 
+/* JEMALLOC_EXPERIMENTAL_FASTPATH_PREFETCH enables prefetch
+ * on malloc fast path.
+ */
+#undef JEMALLOC_EXPERIMENTAL_FASTPATH_PREFETCH
+
 /* JEMALLOC_PROF enables allocation profiling. */
 #undef JEMALLOC_PROF
 
@@ -352,6 +357,15 @@
 
 /* Defined if mprotect(2) is available. */
 #undef JEMALLOC_HAVE_MPROTECT
+
+/* Defined if sys/sdt.h is available and sdt tracing enabled */
+#undef JEMALLOC_EXPERIMENTAL_USDT_STAP
+
+/*
+ * Defined if sys/sdt.h is unavailable, sdt tracing enabled, and
+ * platform is supported
+ */
+#undef JEMALLOC_EXPERIMENTAL_USDT_CUSTOM
 
 /*
  * Defined if transparent huge pages (THPs) are supported via the

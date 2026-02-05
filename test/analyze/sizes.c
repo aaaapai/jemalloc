@@ -11,9 +11,9 @@
 
 static void
 do_print(const char *name, size_t sz_bytes) {
-	const char *sizes[] = {"bytes", "KB", "MB", "GB", "TB", "PB", "EB",
-		"ZB"};
-	size_t sizes_max = sizeof(sizes)/sizeof(sizes[0]);
+	const char *sizes[] = {
+	    "bytes", "KB", "MB", "GB", "TB", "PB", "EB", "ZB"};
+	size_t sizes_max = sizeof(sizes) / sizeof(sizes[0]);
 
 	size_t ind = 0;
 	double sz = sz_bytes;
@@ -30,13 +30,10 @@ do_print(const char *name, size_t sz_bytes) {
 
 int
 main(void) {
-#define P(type)								\
-	do_print(#type, sizeof(type))
+#define P(type) do_print(#type, sizeof(type))
 	P(arena_t);
 	P(arena_stats_t);
 	P(base_t);
-	P(bin_t);
-	P(bin_with_batch_t);
 	P(decay_t);
 	P(edata_t);
 	P(ecache_t);

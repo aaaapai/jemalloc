@@ -90,7 +90,7 @@ struct psset_s {
 	 */
 	hpdata_age_heap_t pageslabs[PSSET_NPSIZES];
 	/* Bitmap for which set bits correspond to non-empty heaps. */
-	fb_group_t pageslab_bitmap[FB_NGROUPS(PSSET_NPSIZES)];
+	fb_group_t    pageslab_bitmap[FB_NGROUPS(PSSET_NPSIZES)];
 	psset_stats_t stats;
 	/*
 	 * Slabs with no active allocations, but which are allowed to serve new
@@ -121,8 +121,12 @@ void psset_update_end(psset_t *psset, hpdata_t *ps);
 
 /* Analogous to the eset_fit; pick a hpdata to serve the request. */
 hpdata_t *psset_pick_alloc(psset_t *psset, size_t size);
-/* Pick one to purge. */
-hpdata_t *psset_pick_purge(psset_t *psset);
+/*
+ * Pick one to purge that is purgable before given time (inclusive).  If now
+ * is NULL then time is not considered.
+ */
+hpdata_t *psset_pick_purge(psset_t *psset, const nstime_t *now);
+
 /* Pick one to hugify. */
 hpdata_t *psset_pick_hugify(psset_t *psset);
 

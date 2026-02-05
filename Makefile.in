@@ -98,7 +98,6 @@ C_SRCS := $(srcroot)src/jemalloc.c \
 	$(srcroot)src/arena.c \
 	$(srcroot)src/background_thread.c \
 	$(srcroot)src/base.c \
-	$(srcroot)src/batcher.c \
 	$(srcroot)src/bin.c \
 	$(srcroot)src/bin_info.c \
 	$(srcroot)src/bitmap.c \
@@ -124,7 +123,9 @@ C_SRCS := $(srcroot)src/jemalloc.c \
 	$(srcroot)src/san_bump.c \
 	$(srcroot)src/hook.c \
 	$(srcroot)src/hpa.c \
+	$(srcroot)src/hpa_central.c \
 	$(srcroot)src/hpa_hooks.c \
+	$(srcroot)src/hpa_utils.c \
 	$(srcroot)src/hpdata.c \
 	$(srcroot)src/inspect.c \
 	$(srcroot)src/large.c \
@@ -134,7 +135,6 @@ C_SRCS := $(srcroot)src/jemalloc.c \
 	$(srcroot)src/nstime.c \
 	$(srcroot)src/pa.c \
 	$(srcroot)src/pa_extra.c \
-	$(srcroot)src/pai.c \
 	$(srcroot)src/pac.c \
 	$(srcroot)src/pages.c \
 	$(srcroot)src/peak_event.c \
@@ -156,6 +156,7 @@ C_SRCS := $(srcroot)src/jemalloc.c \
 	$(srcroot)src/tcache.c \
 	$(srcroot)src/test_hooks.c \
 	$(srcroot)src/thread_event.c \
+	$(srcroot)src/thread_event_registry.c \
 	$(srcroot)src/ticker.c \
 	$(srcroot)src/tsd.c \
 	$(srcroot)src/util.c \
@@ -207,8 +208,6 @@ TESTS_UNIT := \
 	$(srcroot)test/unit/background_thread_enable.c \
 	$(srcroot)test/unit/base.c \
 	$(srcroot)test/unit/batch_alloc.c \
-	$(srcroot)test/unit/batcher.c \
-	$(srcroot)test/unit/bin_batching.c \
 	$(srcroot)test/unit/binshard.c \
 	$(srcroot)test/unit/bitmap.c \
 	$(srcroot)test/unit/bit_util.c \
@@ -230,6 +229,8 @@ TESTS_UNIT := \
 	$(srcroot)test/unit/hash.c \
 	$(srcroot)test/unit/hook.c \
 	$(srcroot)test/unit/hpa.c \
+	$(srcroot)test/unit/hpa_sec_integration.c \
+	$(srcroot)test/unit/hpa_thp_always.c \
 	$(srcroot)test/unit/hpa_vectorized_madvise.c \
 	$(srcroot)test/unit/hpa_vectorized_madvise_large_batch.c \
 	$(srcroot)test/unit/hpa_background_thread.c \
@@ -568,6 +569,28 @@ $(objroot)test/stress/%$(EXE): $(objroot)test/stress/%.$(O) $(C_JET_OBJS) $(C_TE
 	@mkdir -p $(@D)
 	$(CC) $(TEST_LD_MODE) $(LDTARGET) $(filter %.$(O),$^) $(call RPATH,$(objroot)lib) $(objroot)lib/$(LIBJEMALLOC).$(IMPORTLIB) $(LDFLAGS) $(filter-out -lm,$(LIBS)) $(LM) $(EXTRA_LDFLAGS)
 
+$(objroot)test/stress/pa/pa_data_preprocessor$(EXE): $(objroot)test/stress/pa/pa_data_preprocessor.$(O)
+	@mkdir -p $(@D)
+	$(CXX) $(LDTARGET) $(filter %.$(O),$^) $(LDFLAGS) $(filter-out -lm,$(LIBS)) $(LM) $(EXTRA_LDFLAGS)
+
+$(objroot)test/stress/pa/pa_microbench$(EXE): $(objroot)test/stress/pa/pa_microbench.$(O) $(C_JET_OBJS) $(C_TESTLIB_STRESS_OBJS)
+	@mkdir -p $(@D)
+	$(CC) $(LDTARGET) $(filter %.$(O),$^) $(call RPATH,$(objroot)lib) $(LDFLAGS) $(filter-out -lm,$(LIBS)) $(LM) $(EXTRA_LDFLAGS)
+
+$(objroot)test/stress/pa/%.$(O): $(srcroot)test/stress/pa/%.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -c $(CPPFLAGS) -DJEMALLOC_STRESS_TEST -I$(srcroot)test/include -I$(objroot)test/include $(CTARGET) $<
+ifdef CC_MM
+	@$(CC) -MM $(CPPFLAGS) -DJEMALLOC_STRESS_TEST -I$(srcroot)test/include -I$(objroot)test/include -MT $@ -o $(@:%.$(O)=%.d) $<
+endif
+
+$(objroot)test/stress/pa/%.$(O): $(srcroot)test/stress/pa/%.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) -c $(CPPFLAGS) -I$(srcroot)test/include -I$(objroot)test/include $(CTARGET) $<
+ifdef CC_MM
+	@$(CXX) -MM $(CPPFLAGS) -I$(srcroot)test/include -I$(objroot)test/include -MT $@ -o $(@:%.$(O)=%.d) $<
+endif
+
 build_lib_shared: $(DSOS)
 build_lib_static: $(STATIC_LIBS)
 ifeq ($(enable_shared), 1)
@@ -688,6 +711,7 @@ tests_unit: $(TESTS_UNIT:$(srcroot)%.c=$(objroot)%$(EXE))
 tests_integration: $(TESTS_INTEGRATION:$(srcroot)%.c=$(objroot)%$(EXE)) $(TESTS_INTEGRATION_CPP:$(srcroot)%.cpp=$(objroot)%$(EXE))
 tests_analyze: $(TESTS_ANALYZE:$(srcroot)%.c=$(objroot)%$(EXE))
 tests_stress: $(TESTS_STRESS:$(srcroot)%.c=$(objroot)%$(EXE)) $(TESTS_STRESS_CPP:$(srcroot)%.cpp=$(objroot)%$(EXE))
+tests_pa: $(objroot)test/stress/pa/pa_data_preprocessor$(EXE) $(objroot)test/stress/pa/pa_microbench$(EXE)
 tests: tests_unit tests_integration tests_analyze tests_stress
 
 check_unit_dir:
