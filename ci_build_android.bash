@@ -62,6 +62,9 @@ EOF
   --prefix=${PWD}/build_android-$BUILD_ARCH \
   --with-lg-page=16 \
   --with-jemalloc-prefix=je_ \
+  --disable-cxx \
+  --disable-initial-exec-tls \
+  --disable-fill \
   --disable-stats \
   --enable-doc=no \
   || error_code=$?
